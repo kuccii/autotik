@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 import httpx
 import pytest
 
@@ -71,14 +74,23 @@ def test_auto_posts_until_daily_cap(tmp_path):
 def test_cap_accounts_for_already_posted_today(tmp_path):
     conn = make_conn(tmp_path)
     cur = conn.cursor()
-    db.set_status(cur, "v1", "posted")
-    cur.execute("UPDATE videos SET posted_at='2026-09-30T08:00:00' WHERE video_id='v1'")
+    db.insert_candidates(cur, [row("v4", tmp_path)])
+    db.set_status(cur, "v4", "approved")
+    db.set_status(cur, "v4", "posted")
+    stamp = datetime.now(ZoneInfo("Africa/Kigali")).astimezone(timezone.utc)
+    cur.execute(
+        "UPDATE videos SET posted_at=? WHERE video_id=?",
+        (stamp.isoformat(timespec="seconds"), "v4"),
+    )
     conn.commit()
     out = publish.publish_batch(
-        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        cfg(POSTS_PER_DAY="2"), conn, auto=True,
         uploader=lambda *a: None, client=no_net(),
     )
-    assert out["posted"] == 2
+    assert out["posted"] == 1
+    counts = db.counts(cur)
+    assert counts["posted"] == 2
+    assert counts["approved"] == 2
 
 
 def test_failure_marks_row_and_stops_batch(tmp_path):

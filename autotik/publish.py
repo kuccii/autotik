@@ -1,7 +1,6 @@
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from autotik import alert, db
 
@@ -62,8 +61,7 @@ def default_uploader(cfg):
 
 
 def publish_batch(cfg, conn, now=None, auto=False, uploader=None, client=None):
-    now = now or datetime.now(ZoneInfo("Africa/Kigali"))
-    day = now.date().isoformat()
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cur = conn.cursor()
 
     if cfg.stage_only and not auto:
@@ -82,6 +80,7 @@ def publish_batch(cfg, conn, now=None, auto=False, uploader=None, client=None):
     for row in missing:
         db.set_status(cur, row["video_id"], "failed", "no file_path recorded")
         alert.send(cfg.n8n_webhook_url, "warn", f"missing file for {row['video_id']}")
+    conn.commit()
 
     own_client = client is None
     if own_client:
