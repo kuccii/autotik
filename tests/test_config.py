@@ -49,3 +49,19 @@ def test_invalid_overlay_account_rejected():
 def test_bool_parsing():
     assert load_config(base_env(STAGE_ONLY="false")).stage_only is False
     assert load_config(base_env(OVERLAY_ENABLED="0")).overlay_enabled is False
+
+
+def test_blank_stage_only_treated_as_unset_defaults_to_true():
+    assert load_config(base_env(STAGE_ONLY="")).stage_only is True
+    assert load_config(base_env(STAGE_ONLY="   ")).stage_only is True
+
+
+def test_unrecognized_boolean_token_rejected():
+    with pytest.raises(ConfigError) as exc:
+        load_config(base_env(STAGE_ONLY="ture"))
+    assert "unrecognized boolean value" in str(exc.value)
+    assert "ture" in str(exc.value)
+
+
+def test_overlay_enabled_no_parses_as_false():
+    assert load_config(base_env(OVERLAY_ENABLED="no")).overlay_enabled is False

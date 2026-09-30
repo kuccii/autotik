@@ -5,6 +5,7 @@ from dataclasses import dataclass
 REQUIRED = ("REGION", "TIKTOK_ACCOUNT", "OPENROUTER_API_KEY")
 ACCOUNT_RE = re.compile(r"^@?[A-Za-z0-9_.]{1,30}$")
 TRUTHY = ("1", "true", "yes", "on")
+FALSY = ("0", "false", "no", "off")
 
 
 class ConfigError(RuntimeError):
@@ -32,9 +33,14 @@ class Config:
 
 
 def _flag(raw, default):
-    if raw is None:
+    if raw is None or not raw.strip():
         return default
-    return raw.strip().lower() in TRUTHY
+    value = raw.strip().lower()
+    if value in TRUTHY:
+        return True
+    if value in FALSY:
+        return False
+    raise ConfigError(f"unrecognized boolean value: {raw!r}")
 
 
 def _int(raw, default):
