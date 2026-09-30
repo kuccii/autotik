@@ -6,7 +6,7 @@ import httpx
 LEVELS = ("info", "warn", "error")
 
 
-def send(webhook_url, level, message, client=None):
+def send(webhook_url: str, level: str, message: str, client=None) -> bool:
     if not webhook_url:
         return False
     if level not in LEVELS:
@@ -27,7 +27,7 @@ def send(webhook_url, level, message, client=None):
             headers={"Content-Type": "application/json"},
         )
         return 200 <= resp.status_code < 300
-    except httpx.HTTPError:
+    except Exception:
         return False
     finally:
         if own:

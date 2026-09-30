@@ -36,3 +36,23 @@ def test_non_2xx_returns_false():
 
 def test_empty_url_is_noop():
     assert alert.send("", "error", "m") is False
+
+
+def test_scheme_less_url_returns_false_without_raising():
+    def handler(request):
+        return httpx.Response(200)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert alert.send("n8n.example.com/webhook/x", "error", "m", client) is False
+
+
+def test_posts_json_content_type():
+    seen = {}
+
+    def handler(request):
+        seen["content_type"] = request.headers.get("content-type")
+        return httpx.Response(200)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert alert.send("https://hook.test/x", "info", "m", client) is True
+    assert seen["content_type"] == "application/json"
