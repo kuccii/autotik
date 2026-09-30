@@ -1,14 +1,12 @@
 import argparse
 import sys
 import traceback
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from autotik import alert, db, discover, download, publish, transform
 from autotik.config import ConfigError, load_config
-
-TZ = ZoneInfo("Africa/Kigali")
 
 
 def db_path(cfg):
@@ -21,7 +19,7 @@ def videos_dir(cfg):
 
 def run_discover(cfg, conn, limit=None):
     fetch = cfg.discover_fetch
-    keep = limit or cfg.discover_keep
+    keep = limit if limit is not None else cfg.discover_keep
     import httpx
 
     with httpx.Client(follow_redirects=True) as client:
@@ -51,18 +49,24 @@ def run_discover(cfg, conn, limit=None):
                 db.log(cur, item["video_id"], "transform_failed", str(exc)[:300])
                 conn.commit()
                 continue
-            db.insert_candidates(
-                cur,
-                [
-                    dict(
-                        item,
-                        desc_orig=item["desc"],
-                        file_path=str(out),
-                        file_hash=digest,
-                    )
-                ],
-            )
-            db.log(cur, item["video_id"], "staged", str(out))
+            try:
+                db.insert_candidates(
+                    cur,
+                    [
+                        dict(
+                            item,
+                            desc_orig=item["desc"],
+                            file_path=str(out),
+                            file_hash=digest,
+                        )
+                    ],
+                )
+                db.log(cur, item["video_id"], "staged", str(out))
+            except db.DuplicateHash as exc:
+                alert.send(cfg.n8n_webhook_url, "warn", str(exc))
+                db.log(cur, item["video_id"], "duplicate_hash", str(exc)[:300])
+                conn.commit()
+                continue
             staged += 1
             conn.commit()
         return staged
@@ -114,7 +118,9 @@ def cmd_approve(cfg, conn, args):
 
 
 def cmd_publish(cfg, conn, args):
-    auto = args.auto and not args.stage_only
+    if args.stage_only:
+        cfg = replace(cfg, stage_only=True)
+    auto = args.auto
     if cfg.stage_only and not auto:
         print("stage-only mode: pass --auto to upload")
     result = run_publish(cfg, conn, auto)
@@ -122,6 +128,10 @@ def cmd_publish(cfg, conn, args):
     if result["failed"] > 0:
         return 1
     if auto and result["posted"] == 0 and result["skipped"] == 0:
+        alert.send(
+            cfg.n8n_webhook_url, "error",
+            "auto publish produced 0 posts: no approved candidates or budget exhausted",
+        )
         return 1
     return 0
 
@@ -129,7 +139,7 @@ def cmd_publish(cfg, conn, args):
 def cmd_status(cfg, conn, args):
     cur = conn.cursor()
     c = db.counts(cur)
-    today = datetime.now(TZ).date().isoformat()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     allowed = publish.allowed_today(db.posted_today(cur, today), cfg.posts_per_day, cfg.max_posts_per_day)
     print(f"date={today} region={cfg.region} stage_only={cfg.stage_only}")
     print("counts: " + ", ".join(f"{k}={v}" for k, v in sorted(c.items())))
@@ -187,9 +197,17 @@ def main(argv=None):
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
-    conn = db.init_db(db_path(cfg))
+    conn = None
     try:
+        conn = db.init_db(db_path(cfg))
         return COMMANDS[args.command](cfg, conn, args)
+    except db.BadTransition as exc:
+        print(f"bad transition: {exc}", file=sys.stderr)
+        alert.send(
+            cfg.n8n_webhook_url, "error",
+            f"autotik {args.command} bad transition: {exc}",
+        )
+        return 2
     except Exception:
         traceback.print_exc()
         alert.send(
@@ -198,7 +216,8 @@ def main(argv=None):
         )
         return 1
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 if __name__ == "__main__":

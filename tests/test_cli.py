@@ -1,5 +1,3 @@
-import pytest
-
 from autotik import cli, db
 
 
@@ -11,7 +9,9 @@ def env(monkeypatch, **over):
     }
     base.update(over)
     for k, v in base.items():
-        if v != "":
+        if v == "":
+            monkeypatch.delenv(k, raising=False)
+        else:
             monkeypatch.setenv(k, v)
 
 
@@ -66,3 +66,85 @@ def test_approve_all_transitions_rows(tmp_path, monkeypatch):
 def test_status_is_exit_0(tmp_path, monkeypatch):
     env(monkeypatch, DATA_DIR=str(tmp_path))
     assert cli.main(["status"]) == 0
+
+
+def test_config_error_is_exit_2(monkeypatch):
+    env(monkeypatch, REGION="", TIKTOK_ACCOUNT="", OPENROUTER_API_KEY="")
+    assert cli.main(["status"]) == 2
+
+
+def test_publish_auto_zero_posts_alerts_error(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    monkeypatch.setattr(cli, "run_publish", lambda cfg, conn, auto: {"posted": 0, "failed": 0, "skipped": 0})
+    sent = []
+
+    def fake_send(url, level, message, client=None):
+        sent.append((level, message))
+        return False
+
+    monkeypatch.setattr(cli.alert, "send", fake_send)
+    assert cli.main(["publish", "--auto"]) == 1
+    assert sent and sent[0][0] == "error"
+    assert "0 posts" in sent[0][1]
+
+
+def test_publish_stage_only_flag_overrides_env(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path), STAGE_ONLY="0")
+    seen = {}
+
+    def fake_publish(cfg, conn, auto):
+        seen.update(cfg=cfg, auto=auto)
+        return {"posted": 0, "failed": 0, "skipped": 0}
+
+    monkeypatch.setattr(cli, "run_publish", fake_publish)
+    assert cli.main(["publish", "--stage-only"]) == 0
+    assert seen["cfg"].stage_only is True
+    assert seen["auto"] is False
+
+
+def test_duplicate_hash_mid_discovery_continues(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    feed = [
+        {"video_id": "v1", "region": "RW", "author": {"unique_id": "u1", "nickname": "U1"},
+         "play": "https://x/1.mp4", "title": "first", "digg_count": 300,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v2", "region": "RW", "author": {"unique_id": "u2", "nickname": "U2"},
+         "play": "https://x/2.mp4", "title": "second", "digg_count": 200,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v3", "region": "RW", "author": {"unique_id": "u3", "nickname": "U3"},
+         "play": "https://x/3.mp4", "title": "third", "digg_count": 100,
+         "play_count": 10, "share_count": 1, "duration": 12},
+    ]
+    hashes = {"v1": "h1", "v2": "h1", "v3": "h2"}
+    sent = []
+
+    def fake_send(url, level, message, client=None):
+        sent.append((level, message))
+        return False
+
+    def fake_download(item, dest_dir, client):
+        return tmp_path / f"{item['video_id']}.mp4", hashes[item["video_id"]]
+
+    monkeypatch.setattr(cli.discover, "fetch_feed", lambda client, region, count: feed)
+    monkeypatch.setattr(cli.download, "download", fake_download)
+    monkeypatch.setattr(
+        cli.transform, "transform",
+        lambda src, dst, account, enabled=True, style="bar": dst,
+    )
+    monkeypatch.setattr(cli.alert, "send", fake_send)
+
+    assert cli.main(["discover"]) == 0
+
+    assert [level for level, _ in sent] == ["warn"]
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    assert db.counts(conn.cursor())["staged"] == 2
+    dup = conn.execute(
+        "SELECT count(*) c FROM post_log WHERE video_id='v2' AND event='duplicate_hash'"
+    ).fetchone()
+    assert dup["c"] == 1
+    conn.close()
+
+
+def test_auto_and_stage_only_conflict_is_exit_2(monkeypatch):
+    env(monkeypatch)
+    assert cli.main(["publish", "--auto", "--stage-only"]) == 2
