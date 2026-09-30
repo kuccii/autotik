@@ -1,0 +1,12 @@
+services:
+  autotik:
+    build: .
+    env_file: .env
+    environment:
+      TZ: Africa/Kigali
+      DATA_DIR: /app/data
+      COOKIE_DIR: /app/cookies
+    volumes:
+      - ./data:/app/data
+      - ./cookies:/app/cookies
+    shm_size: "1gb"
