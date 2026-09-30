@@ -1,8 +1,6 @@
 import hashlib
 from pathlib import Path
 
-import httpx
-
 DOWNLOAD_MIN_BYTES = 50_000
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -53,7 +51,7 @@ def _direct(client, url, dest):
 def download(item, dest_dir, client, ytdlp=None):
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{item['video_id']}.mp4"
+    dest = dest_dir / (Path(str(item["video_id"])).name + ".mp4")
     if dest.exists() and dest.stat().st_size >= DOWNLOAD_MIN_BYTES:
         return dest, file_hash(dest)
 
@@ -61,17 +59,23 @@ def download(item, dest_dir, client, ytdlp=None):
     errors = []
     try:
         _direct(client, item["play_url"], dest)
-    except (DownloadError, httpx.HTTPError, OSError) as exc:
+    except Exception as exc:
         errors.append(f"direct: {exc}")
         if dest.exists():
-            dest.unlink()
+            try:
+                dest.unlink()
+            except OSError:
+                pass
         try:
             ytdlp(item["source_url"], dest)
         except Exception as exc2:
             errors.append(f"ytdlp: {exc2}")
         if not dest.exists() or dest.stat().st_size < DOWNLOAD_MIN_BYTES:
             if dest.exists():
-                dest.unlink()
+                try:
+                    dest.unlink()
+                except OSError:
+                    pass
             raise DownloadError(
                 f"download failed for {item['video_id']}: " + " | ".join(errors)
             )
