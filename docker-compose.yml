@@ -1,6 +1,7 @@
 services:
   autotik:
     build: .
+    command: status
     env_file: .env
     environment:
       TZ: Africa/Kigali

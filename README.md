@@ -9,8 +9,12 @@ Read `../docs/superpowers/specs/2026-09-30-autotik-design.md` first.
 ```bash
 cp .env.example .env      # then edit
 python -m pytest          # unit tests, no network
+set -a; . ./.env; set +a
 python -m autotik.cli status
 ```
+
+Under `docker compose run` the env is injected automatically via `env_file`;
+the `set -a; . ./.env; set +a` line is only needed for bare-metal shells.
 
 ## Cookie export (required before `publish --auto`)
 
@@ -38,8 +42,13 @@ docker compose run --rm autotik discover
 30 19 * * * docker compose -f /root/autotik/docker-compose.yml run --rm autotik publish  >> /var/log/autotik.log 2>&1
 ```
 
+Container `TZ` does not affect host cron: set the host clock with
+`timedatectl set-timezone Africa/Kigali` or the schedule fires 2h late.
+
 `POSTS_PER_DAY` is the real cap: extra publish runs find the budget spent
-and exit 0. That also means a failed 08:00 slot is retried at 13:30.
+and exit 0. A failed 08:00 row is not retried (re-staging requires an
+explicit approve); the 13:30 run posts the next approved row instead —
+the failure consumed no budget.
 
 ## Acceptance gate
 

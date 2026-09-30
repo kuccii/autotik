@@ -1,0 +1,4 @@
+data/
+cookies/
+__pycache__/
+tests/
