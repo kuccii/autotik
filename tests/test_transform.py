@@ -105,8 +105,9 @@ def test_disabled_transform_returns_source_path(tmp_path):
     assert out == src
 
 
-def test_nonexistent_source_raises(tmp_path):
-    with pytest.raises(transform.TransformError):
+def test_nonexistent_source_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(transform, "probe", fake_probe)
+    with pytest.raises(transform.TransformError, match="source missing"):
         transform.transform(tmp_path / "missing.mp4", tmp_path / "o.mp4", "@a")
 
 
@@ -126,3 +127,16 @@ def test_real_ffmpeg_probe_and_transform(tmp_path, monkeypatch):
     out = transform.transform(src, tmp_path / "dst.mp4", "@demo")
     assert out.exists() and out.stat().st_size > 0
     assert transform.probe(out)["height"] == 1920
+
+    wide_src = tmp_path / "wide.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=15",
+         "-t", "2", "-pix_fmt", "yuv420p", str(wide_src)],
+        check=True, capture_output=True,
+    )
+    out_w, out_h = transform.build_filters(1920, 1080, "@demo", "bar")[1:]
+    wide_out = transform.transform(wide_src, tmp_path / "wide_dst.mp4", "@demo")
+    assert wide_out.exists() and wide_out.stat().st_size > 0
+    wide_info = transform.probe(wide_out)
+    assert (wide_info["width"], wide_info["height"]) == (out_w, out_h)
+    assert wide_info["height"] > wide_info["width"]
