@@ -358,3 +358,53 @@ def test_status_without_history_says_never(tmp_path, monkeypatch, capsys):
     env(monkeypatch, DATA_DIR=str(tmp_path))
     assert cli.main(["status"]) == 0
     assert "last run: never" in capsys.readouterr().out
+
+def test_duplicate_hash_on_failed_path_continues_discovery(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    feed = [
+        {"video_id": "v1", "region": "RW", "author": {"unique_id": "u1", "nickname": "U1"},
+         "play": "https://cdn.test/1.mp4", "title": "first", "digg_count": 300,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v2", "region": "RW", "author": {"unique_id": "u2", "nickname": "U2"},
+         "play": "https://cdn.test/2.mp4", "title": "second", "digg_count": 200,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v3", "region": "RW", "author": {"unique_id": "u3", "nickname": "U3"},
+         "play": "https://cdn.test/3.mp4", "title": "third", "digg_count": 100,
+         "play_count": 10, "share_count": 1, "duration": 12},
+    ]
+    hashes = {"v1": "h1", "v2": "h1", "v3": "h2"}
+    sent = []
+
+    def fake_send(url, level, message, client=None):
+        sent.append((level, message))
+        return False
+
+    def fake_download(item, dest_dir, client):
+        return tmp_path / f"{item['video_id']}.mp4", hashes[item["video_id"]]
+
+    def fake_transform(src, dst, account, enabled=True, style="bar"):
+        if Path(src).name == "v2.mp4":
+            raise cli.transform.TransformError(
+                "ffmpeg exited 1: Conversion failed! frame=42 speed=1x"
+            )
+        return dst
+
+    monkeypatch.setattr(cli.discover, "fetch_feed", lambda client, region, count: feed)
+    monkeypatch.setattr(cli.download, "download", fake_download)
+    monkeypatch.setattr(cli.transform, "transform", fake_transform)
+    monkeypatch.setattr(cli.alert, "send", fake_send)
+
+    assert cli.main(["discover"]) == 0
+
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    counts = db.counts(conn.cursor())
+    assert counts["staged"] == 2
+    assert counts["failed"] == 0
+    logs = conn.execute(
+        "SELECT event FROM post_log WHERE video_id='v2'"
+    ).fetchall()
+    events = [r["event"] for r in logs]
+    assert "duplicate_hash" in events
+    assert "transform_failed" in events
+    conn.close()
+    assert not any("crashed" in msg for _, msg in sent)

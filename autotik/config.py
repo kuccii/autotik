@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 REQUIRED = ("REGION", "TIKTOK_ACCOUNT", "OPENROUTER_API_KEY")
 ACCOUNT_RE = re.compile(r"^@?[A-Za-z0-9_.]{1,30}$")
+SLOT_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 TRUTHY = ("1", "true", "yes", "on")
 FALSY = ("0", "false", "no", "off")
 
@@ -68,6 +69,11 @@ def load_config(env=None) -> Config:
     )
     if not slots:
         raise ConfigError("PUBLISH_SLOTS must contain at least one HH:MM slot")
+    for slot in slots:
+        if not SLOT_RE.match(slot):
+            raise ConfigError(
+                f"PUBLISH_SLOTS entry {slot!r} must match {SLOT_RE.pattern}"
+            )
 
     max_posts = max(1, _int(env.get("MAX_POSTS_PER_DAY"), 3))
     posts = min(max(1, _int(env.get("POSTS_PER_DAY"), 1)), max_posts)

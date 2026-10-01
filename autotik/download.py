@@ -1,9 +1,11 @@
 import hashlib
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 DOWNLOAD_MIN_BYTES = 50_000
 DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024
+MAX_REDIRECTS = 5
+REDIRECT_STATUSES = (301, 302, 303, 307, 308)
 ALLOWED_HOST_SUFFIXES = (
     "tiktok.com",
     "tiktokcdn.com",
@@ -57,18 +59,40 @@ def _ytdlp_fallback(url, dest):
 
 
 def _direct(client, url, dest):
-    with client.stream("GET", url, headers={"User-Agent": UA}, timeout=60.0) as resp:
-        if resp.status_code != 200:
-            raise DownloadError(f"direct fetch HTTP {resp.status_code}")
-        written = 0
-        with open(dest, "wb") as fh:
-            for chunk in resp.iter_bytes(1 << 16):
-                fh.write(chunk)
-                written += len(chunk)
-                if written > DOWNLOAD_MAX_BYTES:
+    current = url
+    redirects = 0
+    while True:
+        with client.stream(
+            "GET", current, headers={"User-Agent": UA},
+            timeout=60.0, follow_redirects=False,
+        ) as resp:
+            if resp.status_code in REDIRECT_STATUSES:
+                if redirects >= MAX_REDIRECTS:
                     raise DownloadError(
-                        f"direct fetch exceeded {DOWNLOAD_MAX_BYTES} bytes"
+                        f"direct fetch exceeded {MAX_REDIRECTS} redirects"
                     )
+                location = resp.headers.get("location")
+                if not location:
+                    raise DownloadError(
+                        f"direct fetch HTTP {resp.status_code} without Location"
+                    )
+                nxt = urljoin(current, location)
+                validate_url(nxt)
+                current = nxt
+                redirects += 1
+                continue
+            if resp.status_code != 200:
+                raise DownloadError(f"direct fetch HTTP {resp.status_code}")
+            written = 0
+            with open(dest, "wb") as fh:
+                for chunk in resp.iter_bytes(1 << 16):
+                    fh.write(chunk)
+                    written += len(chunk)
+                    if written > DOWNLOAD_MAX_BYTES:
+                        raise DownloadError(
+                            f"direct fetch exceeded {DOWNLOAD_MAX_BYTES} bytes"
+                        )
+            break
     if written < DOWNLOAD_MIN_BYTES:
         raise DownloadError(f"direct fetch too small ({written} bytes)")
     return written

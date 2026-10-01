@@ -65,3 +65,26 @@ def test_unrecognized_boolean_token_rejected():
 
 def test_overlay_enabled_no_parses_as_false():
     assert load_config(base_env(OVERLAY_ENABLED="no")).overlay_enabled is False
+
+
+def test_malformed_slot_rejected_at_load():
+    with pytest.raises(ConfigError) as exc:
+        load_config(base_env(PUBLISH_SLOTS="08:00,8am,13:30"))
+    assert "8am" in str(exc.value)
+
+
+def test_slot_range_and_zero_padding_enforced():
+    for bad in ("8:00", "08:5", "24:00", "08:60", "0800", "08:00:00"):
+        with pytest.raises(ConfigError) as exc:
+            load_config(base_env(PUBLISH_SLOTS=bad))
+        assert bad in str(exc.value)
+
+
+def test_valid_slots_parse_to_same_minutes():
+    from autotik import publish
+
+    cfg = load_config(base_env(PUBLISH_SLOTS="07:45,21:05,00:00,23:59"))
+    assert cfg.publish_slots == ("07:45", "21:05", "00:00", "23:59")
+    assert [publish._slot_minutes(s) for s in cfg.publish_slots] == [
+        465, 1265, 0, 1439,
+    ]

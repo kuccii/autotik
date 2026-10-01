@@ -207,3 +207,82 @@ def test_ytdlp_fallback_caps_max_filesize(tmp_path, monkeypatch):
     download._ytdlp_fallback("https://www.tiktok.com/@a/video/1", tmp_path / "out.mp4")
     assert captured["max_filesize"] == download.DOWNLOAD_MAX_BYTES
     assert captured["urls"] == ["https://www.tiktok.com/@a/video/1"]
+
+@pytest.mark.parametrize(
+    "target,marker",
+    [
+        ("https://169.254.169.254/latest/meta-data/", "allowlist"),
+        ("http://cdn.test/next.mp4", "non-https"),
+    ],
+)
+def test_direct_leg_rejects_redirect_to_internal_target(tmp_path, target, marker):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.host == "cdn.test":
+            return httpx.Response(302, headers={"location": target})
+        return httpx.Response(200, content=b"leak")
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(handler), follow_redirects=True
+    )
+    with pytest.raises(download.DownloadError, match=marker):
+        download._direct(client, "https://cdn.test/video.mp4", tmp_path / "v.mp4")
+    assert seen == ["https://cdn.test/video.mp4"]
+
+
+def test_direct_leg_follows_redirect_to_allowlisted_host(tmp_path):
+    payload = b"x" * 60_000
+
+    def handler(request):
+        if request.url.host == "cdn.test":
+            return httpx.Response(
+                302,
+                headers={"location": "https://v16.tiktokcdn.com/final.mp4"},
+            )
+        return httpx.Response(200, content=payload)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def no_ytdlp(url, dest):
+        pytest.fail(f"ytdlp fallback must not run: {url}")
+
+    path, digest = download.download(item(), tmp_path, client, ytdlp=no_ytdlp)
+    assert path.read_bytes() == payload
+    assert digest == hashlib.sha256(payload).hexdigest()
+
+
+def test_direct_leg_redirect_loop_exhausts_five_hops(tmp_path):
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        nxt = int(request.url.path.strip("/") or "0") + 1
+        return httpx.Response(302, headers={"location": f"https://cdn.test/{nxt}"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(download.DownloadError, match="redirect"):
+        download._direct(client, "https://cdn.test/0", tmp_path / "v.mp4")
+    assert len(seen) == 6
+
+
+def test_direct_leg_resolves_relative_location(tmp_path):
+    payload = b"x" * 60_000
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if request.url.path == "/video.mp4":
+            return httpx.Response(302, headers={"location": "/real/final.mp4"})
+        return httpx.Response(200, content=payload)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    def no_ytdlp(url, dest):
+        pytest.fail(f"ytdlp fallback must not run: {url}")
+
+    path, digest = download.download(item(), tmp_path, client, ytdlp=no_ytdlp)
+    assert "https://cdn.test/real/final.mp4" in seen
+    assert path.read_bytes() == payload
+    assert digest == hashlib.sha256(payload).hexdigest()

@@ -47,19 +47,25 @@ def run_discover(cfg, conn, limit=None):
             except transform.TransformError as exc:
                 alert.send(cfg.n8n_webhook_url, "warn", str(exc))
                 db.log(cur, item["video_id"], "transform_failed", str(exc)[:300])
-                db.insert_candidates(
-                    cur,
-                    [
-                        dict(
-                            item,
-                            desc_orig=item["desc"],
-                            file_path=None,
-                            file_hash=digest,
-                            status="failed",
-                            error=str(exc)[:500],
-                        )
-                    ],
-                )
+                try:
+                    db.insert_candidates(
+                        cur,
+                        [
+                            dict(
+                                item,
+                                desc_orig=item["desc"],
+                                file_path=None,
+                                file_hash=digest,
+                                status="failed",
+                                error=str(exc)[:500],
+                            )
+                        ],
+                    )
+                except db.DuplicateHash as dup:
+                    alert.send(cfg.n8n_webhook_url, "warn", str(dup))
+                    db.log(cur, item["video_id"], "duplicate_hash", str(dup)[:300])
+                    conn.commit()
+                    continue
                 conn.commit()
                 continue
             try:
