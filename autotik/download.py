@@ -1,7 +1,18 @@
 import hashlib
 from pathlib import Path
+from urllib.parse import urlparse
 
 DOWNLOAD_MIN_BYTES = 50_000
+DOWNLOAD_MAX_BYTES = 200 * 1024 * 1024
+ALLOWED_HOST_SUFFIXES = (
+    "tiktok.com",
+    "tiktokcdn.com",
+    "tiktokcdn-us.com",
+    "tiktokv.com",
+    "tiktokv.us",
+    "tikwm.com",
+    "cdn.test",
+)
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
@@ -10,6 +21,16 @@ UA = (
 
 class DownloadError(RuntimeError):
     pass
+
+
+def validate_url(url):
+    parsed = urlparse(str(url))
+    if parsed.scheme != "https":
+        raise DownloadError(f"non-https url rejected: {url!r}")
+    host = (parsed.hostname or "").lower()
+    if not any(host == s or host.endswith("." + s) for s in ALLOWED_HOST_SUFFIXES):
+        raise DownloadError(f"host not allowlisted: {host!r}")
+    return url
 
 
 def file_hash(path):
@@ -43,12 +64,18 @@ def _direct(client, url, dest):
             for chunk in resp.iter_bytes(1 << 16):
                 fh.write(chunk)
                 written += len(chunk)
+                if written > DOWNLOAD_MAX_BYTES:
+                    raise DownloadError(
+                        f"direct fetch exceeded {DOWNLOAD_MAX_BYTES} bytes"
+                    )
     if written < DOWNLOAD_MIN_BYTES:
         raise DownloadError(f"direct fetch too small ({written} bytes)")
     return written
 
 
 def download(item, dest_dir, client, ytdlp=None):
+    validate_url(item["play_url"])
+    validate_url(item["source_url"])
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / (Path(str(item["video_id"])).name + ".mp4")

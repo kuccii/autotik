@@ -152,3 +152,110 @@ def test_rewrite_caption_uses_model_response():
     client = httpx.Client(transport=httpx.MockTransport(handler))
     out = publish.rewrite_caption(client, cfg(), "original")
     assert out == "rewritten #tags"
+
+def test_error_return_marks_failed_and_alerts(tmp_path, monkeypatch):
+    conn = make_conn(tmp_path)
+    sent = []
+    monkeypatch.setattr(
+        publish.alert, "send",
+        lambda url, level, msg, client=None: sent.append((level, msg)) or False,
+    )
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda *a: "Error", client=no_net(),
+    )
+    assert out["posted"] == 0
+    assert out["failed"] == 1
+    cur = conn.cursor()
+    counts = db.counts(cur)
+    assert counts["failed"] == 1
+    assert counts["posted"] == 0
+    assert counts["approved"] == 2
+    row = db.get(cur, "v1")
+    assert row["status"] == "failed"
+    assert "Error" in (row["error"] or "")
+    assert any(level == "error" and "Error" in msg for level, msg in sent)
+    assert not any(level == "error" and "posted" == msg for level, msg in sent)
+
+
+def _fake_uploader_module(monkeypatch, ret, calls):
+    import sys
+    import types
+
+    fake = types.ModuleType("tiktokautouploader")
+
+    def upload_tiktok(**kw):
+        calls.append(kw)
+        return ret
+
+    fake.upload_tiktok = upload_tiktok
+    monkeypatch.setitem(sys.modules, "tiktokautouploader", fake)
+    return fake
+
+
+def test_default_uploader_missing_cookie_raises_before_uploader_call(tmp_path, monkeypatch):
+    calls = []
+    _fake_uploader_module(monkeypatch, "Completed", calls)
+    c = cfg(COOKIE_DIR=str(tmp_path / "cookies"))
+    upload = publish.default_uploader(c)
+    with pytest.raises(publish.PublishError, match="cookie file not found"):
+        upload(tmp_path / "v.mp4", "cap", "@demo")
+    assert calls == []
+
+
+def test_default_uploader_copies_cookie_to_cwd_and_calls_uploader(tmp_path, monkeypatch):
+    cookie_dir = tmp_path / "cookies"
+    cookie_dir.mkdir()
+    (cookie_dir / "TK_cookies_demo.json").write_text(
+        '[{"name": "sessionid", "value": "X", "expires": 4102444800}]'
+    )
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    calls = []
+    _fake_uploader_module(monkeypatch, "Completed", calls)
+    c = cfg(COOKIE_DIR=str(cookie_dir))
+    upload = publish.default_uploader(c)
+    upload(tmp_path / "v.mp4", "cap", "@demo")
+    assert (cwd / "TK_cookies_demo.json").exists()
+    assert len(calls) == 1
+    assert calls[0]["accountname"] == "demo"
+    assert calls[0]["video"].endswith("v.mp4")
+
+
+def test_default_uploader_raises_on_error_return(tmp_path, monkeypatch):
+    cookie_dir = tmp_path / "cookies"
+    cookie_dir.mkdir()
+    (cookie_dir / "TK_cookies_demo.json").write_text("[]")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+    _fake_uploader_module(monkeypatch, "Error", calls)
+    c = cfg(COOKIE_DIR=str(cookie_dir))
+    upload = publish.default_uploader(c)
+    with pytest.raises(publish.PublishError, match="Error"):
+        upload(tmp_path / "v.mp4", "cap", "@demo")
+    assert len(calls) == 1
+
+
+def test_publish_batch_default_uploader_error_marks_failed(tmp_path, monkeypatch):
+    cookie_dir = tmp_path / "cookies"
+    cookie_dir.mkdir()
+    (cookie_dir / "TK_cookies_demo.json").write_text("[]")
+    monkeypatch.chdir(tmp_path)
+    _fake_uploader_module(monkeypatch, "Error", [])
+    sent = []
+    monkeypatch.setattr(
+        publish.alert, "send",
+        lambda url, level, msg, client=None: sent.append((level, msg)) or False,
+    )
+    conn = make_conn(tmp_path)
+    c = cfg(POSTS_PER_DAY="3")
+    out = publish.publish_batch(
+        c, conn, auto=True, uploader=publish.default_uploader(c), client=no_net(),
+    )
+    assert out["posted"] == 0
+    assert out["failed"] == 1
+    counts = db.counts(conn.cursor())
+    assert counts["failed"] == 1
+    assert counts["posted"] == 0
+    assert any(level == "error" for level, _ in sent)

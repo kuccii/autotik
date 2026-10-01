@@ -1,3 +1,4 @@
+from pathlib import Path
 from autotik import cli, db
 
 
@@ -148,3 +149,53 @@ def test_duplicate_hash_mid_discovery_continues(tmp_path, monkeypatch):
 def test_auto_and_stage_only_conflict_is_exit_2(monkeypatch):
     env(monkeypatch)
     assert cli.main(["publish", "--auto", "--stage-only"]) == 2
+
+def test_transform_failure_marks_failed_row_and_continues(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    feed = [
+        {"video_id": "v1", "region": "RW", "author": {"unique_id": "u1", "nickname": "U1"},
+         "play": "https://cdn.test/1.mp4", "title": "first", "digg_count": 300,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v2", "region": "RW", "author": {"unique_id": "u2", "nickname": "U2"},
+         "play": "https://cdn.test/2.mp4", "title": "second", "digg_count": 200,
+         "play_count": 10, "share_count": 1, "duration": 12},
+    ]
+    sent = []
+
+    def fake_send(url, level, message, client=None):
+        sent.append((level, message))
+        return False
+
+    def fake_download(item, dest_dir, client):
+        return tmp_path / f"{item['video_id']}.mp4", "h" + item["video_id"]
+
+    def fake_transform(src, dst, account, enabled=True, style="bar"):
+        if Path(src).name == "v1.mp4":
+            raise cli.transform.TransformError(
+                "ffmpeg exited 1: Conversion failed! frame=42 speed=1x"
+            )
+        return dst
+
+    monkeypatch.setattr(cli.discover, "fetch_feed", lambda client, region, count: feed)
+    monkeypatch.setattr(cli.download, "download", fake_download)
+    monkeypatch.setattr(cli.transform, "transform", fake_transform)
+    monkeypatch.setattr(cli.alert, "send", fake_send)
+
+    assert cli.main(["discover"]) == 0
+
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    counts = db.counts(conn.cursor())
+    assert counts["failed"] == 1
+    assert counts["staged"] == 1
+    failed = conn.execute("SELECT * FROM videos WHERE status='failed'").fetchone()
+    assert failed["video_id"] == "v1"
+    assert "frame=42" in failed["error"]
+    assert failed["desc_orig"] == "first"
+    assert failed["file_hash"] == "hv1"
+    assert failed["region"] == "RW"
+    logs = conn.execute(
+        "SELECT count(*) c FROM post_log WHERE video_id='v1' AND event='transform_failed'"
+    ).fetchone()
+    assert logs["c"] == 1
+    assert any(level == "warn" for level, _ in sent)
+    conn.close()

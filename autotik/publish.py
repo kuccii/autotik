@@ -1,4 +1,5 @@
 import json
+import shutil
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -47,15 +48,39 @@ def rewrite_caption(client, cfg, desc):
         return desc
 
 
+def _stage_cookie(cfg, account):
+    accountname = account.lstrip("@")
+    cookie_dir = Path(cfg.cookie_dir)
+    expected = cookie_dir / f"TK_cookies_{accountname}.json"
+    matches = (
+        sorted(cookie_dir.glob(f"TK_cookies_{accountname}.json"))
+        if cookie_dir.is_dir()
+        else []
+    )
+    if not matches:
+        raise PublishError(f"cookie file not found: {expected} — see README")
+    src = matches[0]
+    dest = Path.cwd() / src.name
+    if src.resolve() != dest.resolve():
+        shutil.copy2(src, dest)
+    return dest
+
+
 def default_uploader(cfg):
     def upload(video_path, caption, account):
+        _stage_cookie(cfg, account)
         from tiktokautouploader import upload_tiktok
 
-        upload_tiktok(
+        ret = upload_tiktok(
             video=str(video_path),
             description=caption,
             accountname=account.lstrip("@"),
         )
+        if ret != "Completed":
+            raise PublishError(
+                f"upload_tiktok returned {ret!r} (expected 'Completed'): "
+                "cannot confirm if uploaded successfully"
+            )
 
     return upload
 
@@ -100,7 +125,12 @@ def publish_batch(cfg, conn, now=None, auto=False, uploader=None, client=None):
                 continue
             caption = rewrite_caption(client, cfg, row["desc_orig"] or "")
             try:
-                upload(path, caption, cfg.account)
+                ret = upload(path, caption, cfg.account)
+                if ret == "Error":
+                    raise PublishError(
+                        f"uploader returned {ret!r}: cannot confirm if "
+                        "uploaded successfully"
+                    )
             except Exception as exc:
                 db.set_status(cur, vid, "failed", str(exc)[:500])
                 db.log(cur, vid, "upload_failed", str(exc)[:500])

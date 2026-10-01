@@ -74,6 +74,9 @@ def insert_candidates(cur, rows):
     new = 0
     for r in rows:
         video_id = r["video_id"]
+        status = r.get("status", "staged")
+        if status not in STATUSES:
+            raise BadTransition(f"unknown status {status!r}")
         existing = get(cur, video_id)
         if existing is not None:
             if r.get("file_hash") and existing["file_hash"] == r["file_hash"]:
@@ -92,14 +95,15 @@ def insert_candidates(cur, rows):
             """INSERT OR IGNORE INTO videos
                (video_id, author, region, desc_orig, digg_count, play_count,
                 share_count, score, file_path, file_hash, source_url,
-                status, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                status, error, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 video_id, r.get("author"), r.get("region"),
                 r.get("desc_orig"), r.get("digg_count", 0),
                 r.get("play_count", 0), r.get("share_count", 0),
                 r.get("score", 0.0), r.get("file_path"),
-                digest, r.get("source_url"), "staged", _now(),
+                digest, r.get("source_url"), status,
+                r.get("error"), _now(),
             ),
         )
         new += cur.rowcount

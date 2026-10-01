@@ -111,3 +111,71 @@ def test_video_id_path_traversal_stays_in_dest_dir(tmp_path):
     assert path.name == "evil.mp4"
     assert path.resolve().parent == tmp_path.resolve()
     assert path.read_bytes() == payload
+
+def no_net_client():
+    def handler(request):
+        raise AssertionError("network attempted")
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_non_https_rejected_before_network(tmp_path):
+    it = item()
+    it["play_url"] = "http://cdn.test/video.mp4"
+    with pytest.raises(download.DownloadError, match="non-https"):
+        download.download(it, tmp_path, no_net_client())
+
+
+def test_internal_and_metadata_hosts_rejected(tmp_path):
+    bad_hosts = (
+        "https://localhost/video.mp4",
+        "https://169.254.169.254/latest/meta-data/",
+        "https://metadata.google.internal/computeMetadata/v1/",
+        "https://127.0.0.1:8080/admin",
+    )
+    for url in bad_hosts:
+        it = item()
+        it["play_url"] = url
+        with pytest.raises(download.DownloadError, match="allowlist"):
+            download.download(it, tmp_path, no_net_client())
+
+
+def test_source_url_validated_before_ytdlp(tmp_path):
+    it = item()
+    it["source_url"] = "https://evil-internal.example/dump"
+    seen = []
+
+    def fake_ytdlp(url, dest):
+        seen.append(url)
+
+    with pytest.raises(download.DownloadError, match="allowlist"):
+        download.download(it, tmp_path, no_net_client(), ytdlp=fake_ytdlp)
+    assert seen == []
+
+
+def test_oversize_stream_aborted(tmp_path, monkeypatch):
+    monkeypatch.setattr(download, "DOWNLOAD_MAX_BYTES", 1000)
+
+    def handler(request):
+        return httpx.Response(200, content=b"x" * 5000)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    dest = tmp_path / "out.mp4"
+    with pytest.raises(download.DownloadError, match="exceeded"):
+        download._direct(client, "https://cdn.test/video.mp4", dest)
+
+
+def test_validate_url_allows_allowlisted_hosts_and_blocks_lookalikes():
+    allowed = (
+        "https://cdn.test/video.mp4",
+        "https://www.tiktok.com/@a/video/1",
+        "https://v16m-webapp-prime.tiktokcdn.com/x.mp4",
+        "https://v3-web.tiktokcdn.com/y.mp4",
+        "https://api16-normal-c-useast1a.tiktokv.com/z",
+        "https://www.tikwm.com/api/feed/list",
+    )
+    for url in allowed:
+        assert download.validate_url(url) == url
+    for url in ("https://eviltiktok.com/x.mp4", "https://tiktok.com.evil.io/x"):
+        with pytest.raises(download.DownloadError):
+            download.validate_url(url)

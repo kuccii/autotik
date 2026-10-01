@@ -18,9 +18,36 @@ the `set -a; . ./.env; set +a` line is only needed for bare-metal shells.
 
 ## Cookie export (required before `publish --auto`)
 
+tiktokautouploader 6.1 reads `TK_cookies_<account>.json` (JSON array, its own
+format) from the process CWD — autotik stages it from `COOKIE_DIR` before
+every upload and fails closed with `cookie file not found: ... — see README`
+when it is absent, so the library never falls into its interactive login.
+
 1. Log into tiktok.com in your own browser.
-2. Copy the `sessionid` cookie value (and `sid_guard` if present).
-3. On the VPS: `mkdir -p cookies && printf 'sessionid=XXXX' > cookies/tiktok.txt && chmod 600 cookies/tiktok.txt`
+2. Export all tiktok.com cookies as a JSON array; each entry needs `name`,
+   `value` and `sameSite` (`Strict`, `Lax` or `None` — `Lax` is assumed when
+   absent), plus `expires` **or** `expirationDate` (unix seconds) so expiry
+   can be checked.
+3. The session must include at least one of `sessionid`, `sid_tt`,
+   `sessionid_ss`, `passport_auth_status` with a **future** expiry — with
+   none of them the library treats the file as expired, deletes it and drops
+   into an interactive browser login that hangs under Docker.
+
+   Placeholder shape only (real values required):
+
+   ```json
+   [
+     {"name": "sessionid", "value": "XXXX", "sameSite": "Lax", "expires": 4102444800}
+   ]
+   ```
+
+4. On the VPS:
+
+   ```bash
+   mkdir -p cookies && cp ~/TK_cookies.json cookies/TK_cookies_shadowmorarch.json && chmod 600 cookies/TK_cookies_*.json
+   ```
+
+   The filename must match the account: `TK_cookies_<handle-without-@>.json`.
 
 Recovery on expiry: the alert webhook fires, `publish` exits 1, nothing is
 retried silently. Re-export the cookie and re-run `publish --auto`.
@@ -79,7 +106,7 @@ Compose v5.1.4, image built from `mcr.microsoft.com/playwright/python:v1.61.0-no
 | 6. Real upload | `publish --auto` | **DEFERRED -- cookie pending; stage-only gate active** (not attempted) |
 | 7. Alert path | `alert.send(webhook, "error", ...)` | **`False`** -- `POST https://n8n.qivook.com/webhook/autotik-alert` answers **404** `The requested webhook "POST autotik-alert" is not registered` (workflow not activated for the production URL). Alerts are currently dropped; activate the n8n workflow to close this. |
 
-**Go/no-go: the pipeline is NOT ready for cron or `publish --auto` until all three open items are closed -- a real `sk-or-v1-...` OpenRouter key in `.env`, the n8n `autotik-alert` workflow activated, and the Step 6 session cookie exported.**
+**Go/no-go: the pipeline is NOT ready for cron or `publish --auto` until all three open items are closed -- a real `sk-or-v1-...` OpenRouter key in `.env`, the n8n `autotik-alert` workflow activated, and the Step 6 session cookie exported.** Unconfirmed-upload failures may still have posted -- visually check the TikTok account before re-approving any failed row.
 
 Dockerfile confirmation (Task 9 open item): `RUN phantomwright_driver install chromium`
 **works as written** -- `phantomwright-driver 1.58.3` ships with `tiktokautouploader==6.1`,
