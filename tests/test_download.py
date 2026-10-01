@@ -179,3 +179,31 @@ def test_validate_url_allows_allowlisted_hosts_and_blocks_lookalikes():
     for url in ("https://eviltiktok.com/x.mp4", "https://tiktok.com.evil.io/x"):
         with pytest.raises(download.DownloadError):
             download.validate_url(url)
+
+
+def test_ytdlp_fallback_caps_max_filesize(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def download(self, urls):
+            captured["urls"] = urls
+
+    fake = types.ModuleType("yt_dlp")
+    fake.YoutubeDL = FakeYDL
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+
+    download._ytdlp_fallback("https://www.tiktok.com/@a/video/1", tmp_path / "out.mp4")
+    assert captured["max_filesize"] == download.DOWNLOAD_MAX_BYTES
+    assert captured["urls"] == ["https://www.tiktok.com/@a/video/1"]

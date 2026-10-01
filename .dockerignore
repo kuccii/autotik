@@ -2,3 +2,5 @@ data/
 cookies/
 __pycache__/
 tests/
+.env
+.superpowers/

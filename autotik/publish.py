@@ -2,10 +2,12 @@ import json
 import shutil
 from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from autotik import alert, db
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+KIGALI = ZoneInfo("Africa/Kigali")
 SYSTEM_PROMPT = (
     "You rewrite TikTok captions. Return ONLY the new caption: a punchy first "
     "line, then 3-5 relevant hashtags. Keep it under 150 characters. Never add "
@@ -19,6 +21,39 @@ class PublishError(RuntimeError):
 
 def allowed_today(posted, posts_per_day, max_posts):
     return max(0, min(posts_per_day, max_posts) - posted)
+
+
+def _slot_minutes(slot):
+    hour, minute = slot.split(":")
+    return int(hour) * 60 + int(minute)
+
+
+def _minutes_in_kigali(now):
+    if now is None:
+        now = datetime.now(KIGALI)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=KIGALI)
+    else:
+        now = now.astimezone(KIGALI)
+    return now.hour * 60 + now.minute
+
+
+def slots_elapsed(cfg, now=None):
+    """Slots with time-of-day <= now, in Africa/Kigali. Slot scheduling only --
+    deliberately separate from the UTC budget-day clock in publish_batch."""
+    minutes = _minutes_in_kigali(now)
+    return sum(1 for s in cfg.publish_slots if _slot_minutes(s) <= minutes)
+
+
+def next_slot(cfg, now=None):
+    minutes = _minutes_in_kigali(now)
+    remaining = sorted(
+        m for m in (_slot_minutes(s) for s in cfg.publish_slots) if m > minutes
+    )
+    if remaining:
+        return f"{remaining[0] // 60:02d}:{remaining[0] % 60:02d} today"
+    first = min(_slot_minutes(s) for s in cfg.publish_slots)
+    return f"{first // 60:02d}:{first % 60:02d} tomorrow"
 
 
 def rewrite_caption(client, cfg, desc):
@@ -85,23 +120,33 @@ def default_uploader(cfg):
     return upload
 
 
-def publish_batch(cfg, conn, now=None, auto=False, uploader=None, client=None):
+def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cur = conn.cursor()
 
     if cfg.stage_only and not auto:
         n = len(db.rows_with_status(cur, "approved"))
-        return {"posted": 0, "failed": 0, "skipped": n}
+        return {"posted": 0, "failed": 0, "skipped": n, "not_due": False, "reason": None}
+
+    elapsed = slots_elapsed(cfg)
+    if elapsed == 0:
+        return {"posted": 0, "failed": 0, "skipped": 0, "not_due": True, "reason": "not_due"}
 
     already = db.posted_today(cur, day)
-    budget = allowed_today(already, cfg.posts_per_day, cfg.max_posts_per_day)
-    if budget <= 0:
-        return {"posted": 0, "failed": 0, "skipped": 0}
+    allowed = min(
+        allowed_today(already, cfg.posts_per_day, cfg.max_posts_per_day),
+        elapsed,
+    )
+    if allowed <= 0:
+        return {
+            "posted": 0, "failed": 0, "skipped": 0,
+            "not_due": False, "reason": "budget_spent",
+        }
 
     candidates = [r for r in db.rows_with_status(cur, "approved") if r["file_path"]]
     missing = [r for r in db.rows_with_status(cur, "approved") if not r["file_path"]]
 
-    result = {"posted": 0, "failed": 0, "skipped": len(missing)}
+    result = {"posted": 0, "failed": 0, "skipped": len(missing), "not_due": False, "reason": None}
     for row in missing:
         db.set_status(cur, row["video_id"], "failed", "no file_path recorded")
         alert.send(cfg.n8n_webhook_url, "warn", f"missing file for {row['video_id']}")
@@ -114,7 +159,7 @@ def publish_batch(cfg, conn, now=None, auto=False, uploader=None, client=None):
     upload = uploader or default_uploader(cfg)
 
     try:
-        for row in candidates[:budget]:
+        for row in candidates[:allowed]:
             vid = row["video_id"]
             path = Path(row["file_path"])
             if not path.exists():

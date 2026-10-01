@@ -50,6 +50,7 @@ def _ytdlp_fallback(url, dest):
         "no_warnings": True,
         "noplaylist": True,
         "format": "mp4/bestvideo*+bestaudio/best",
+        "max_filesize": DOWNLOAD_MAX_BYTES,
     }
     with YoutubeDL(opts) as ydl:
         ydl.download([url])

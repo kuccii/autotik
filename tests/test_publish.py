@@ -49,12 +49,64 @@ def no_net(content="rewritten"):
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
+@pytest.fixture(autouse=True)
+def slots_always_elapsed(monkeypatch):
+    monkeypatch.setattr(publish, "slots_elapsed", lambda cfg, now=None: 3)
+
+
 def test_stage_only_blocks_upload(tmp_path):
     conn = make_conn(tmp_path)
     c = cfg(STAGE_ONLY="true")
     out = publish.publish_batch(c, conn, auto=False, uploader=lambda *a: pytest.fail("uploaded"))
-    assert out == {"posted": 0, "failed": 0, "skipped": 3}
+    assert out == {"posted": 0, "failed": 0, "skipped": 3, "not_due": False, "reason": None}
     assert db.counts(conn.cursor())["approved"] == 3
+
+
+def test_not_due_before_first_slot_has_no_side_effects(tmp_path, monkeypatch):
+    conn = make_conn(tmp_path)
+    monkeypatch.setattr(publish, "slots_elapsed", lambda cfg, now=None: 0)
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda *a: pytest.fail("uploaded"), client=no_net(),
+    )
+    assert out == {"posted": 0, "failed": 0, "skipped": 0, "not_due": True, "reason": "not_due"}
+    assert db.counts(conn.cursor())["approved"] == 3
+    log_rows = conn.execute("SELECT count(*) c FROM post_log").fetchone()
+    assert log_rows["c"] == 0
+
+
+def test_budget_spent_reports_reason(tmp_path, monkeypatch):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    db.set_status(cur, "v1", "posted")
+    conn.commit()
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="1"), conn, auto=True,
+        uploader=lambda *a: pytest.fail("uploaded"), client=no_net(),
+    )
+    assert out["not_due"] is False
+    assert out["reason"] == "budget_spent"
+    assert out["posted"] == 0
+
+
+def test_slots_elapsed_caps_allowed(tmp_path, monkeypatch):
+    conn = make_conn(tmp_path)
+    monkeypatch.setattr(publish, "slots_elapsed", lambda cfg, now=None: 1)
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda path, caption, account: None, client=no_net(),
+    )
+    assert out["posted"] == 1
+    assert db.counts(conn.cursor())["approved"] == 2
+
+
+def test_due_with_budget_and_nothing_approved_is_reason_none(tmp_path, monkeypatch):
+    conn = db.init_db(tmp_path / "t.sqlite")
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda *a: pytest.fail("uploaded"), client=no_net(),
+    )
+    assert out == {"posted": 0, "failed": 0, "skipped": 0, "not_due": False, "reason": None}
 
 
 def test_auto_posts_until_daily_cap(tmp_path):

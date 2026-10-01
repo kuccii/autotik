@@ -138,12 +138,18 @@ def cmd_publish(cfg, conn, args):
         print("stage-only mode: pass --auto to upload")
     result = run_publish(cfg, conn, auto)
     print(result)
-    if result["failed"] > 0:
+    if result.get("failed", 0) > 0:
         return 1
-    if auto and result["posted"] == 0 and result["skipped"] == 0:
+    if auto and result.get("posted", 0) == 0 and result.get("skipped", 0) == 0:
+        reason = result.get("reason")
+        if reason == "not_due":
+            return 0
+        if reason == "budget_spent":
+            print("budget spent")
+            return 0
         alert.send(
             cfg.n8n_webhook_url, "error",
-            "auto publish produced 0 posts: no approved candidates or budget exhausted",
+            "auto publish produced 0 posts: no approved candidates",
         )
         return 1
     return 0
@@ -157,6 +163,12 @@ def cmd_status(cfg, conn, args):
     print(f"date={today} region={cfg.region} stage_only={cfg.stage_only}")
     print("counts: " + ", ".join(f"{k}={v}" for k, v in sorted(c.items())))
     print(f"remaining today: {allowed}")
+    last = db.last_log(cur)
+    if last is None:
+        print("last run: never")
+    else:
+        print(f"last run: {last['ts']} {last['event']}")
+    print(f"next slot: {publish.next_slot(cfg)}")
     return 0
 
 
@@ -172,7 +184,7 @@ def build_parser():
     sub = p.add_subparsers(dest="command", required=True)
 
     d = sub.add_parser("discover", help="fetch, download, transform, stage")
-    d.add_argument("--limit", type=int, default=None)
+    d.add_argument("--limit", type=int, default=None, help="max new rows to stage (default: DISCOVER_KEEP)")
 
     a = sub.add_parser("approve", help="move staged rows to approved")
     a.add_argument("video_ids", nargs="*")

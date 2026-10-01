@@ -1,4 +1,8 @@
+import re
 from pathlib import Path
+
+import pytest
+
 from autotik import cli, db
 
 
@@ -199,3 +203,158 @@ def test_transform_failure_marks_failed_row_and_continues(tmp_path, monkeypatch)
     assert logs["c"] == 1
     assert any(level == "warn" for level, _ in sent)
     conn.close()
+
+
+def _spy_alert(monkeypatch):
+    sent = []
+
+    def fake_send(url, level, message, client=None):
+        sent.append((level, message))
+        return False
+
+    monkeypatch.setattr(cli.alert, "send", fake_send)
+    return sent
+
+
+def test_publish_auto_not_due_exits_0_without_alert(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    monkeypatch.setattr(
+        cli, "run_publish",
+        lambda cfg, conn, auto: {
+            "posted": 0, "failed": 0, "skipped": 0,
+            "not_due": True, "reason": "not_due",
+        },
+    )
+    sent = _spy_alert(monkeypatch)
+    assert cli.main(["publish", "--auto"]) == 0
+    assert sent == []
+
+
+def test_publish_auto_budget_spent_exits_0_without_alert(tmp_path, monkeypatch, capsys):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    monkeypatch.setattr(
+        cli, "run_publish",
+        lambda cfg, conn, auto: {
+            "posted": 0, "failed": 0, "skipped": 0,
+            "not_due": False, "reason": "budget_spent",
+        },
+    )
+    sent = _spy_alert(monkeypatch)
+    assert cli.main(["publish", "--auto"]) == 0
+    assert sent == []
+    assert "budget spent" in capsys.readouterr().out
+
+
+def test_publish_auto_due_with_budget_and_nothing_approved_alerts(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    monkeypatch.setattr(
+        cli, "run_publish",
+        lambda cfg, conn, auto: {
+            "posted": 0, "failed": 0, "skipped": 0,
+            "not_due": False, "reason": None,
+        },
+    )
+    sent = _spy_alert(monkeypatch)
+    assert cli.main(["publish", "--auto"]) == 1
+    assert sent and sent[0][0] == "error"
+    assert "0 posts" in sent[0][1]
+
+
+def test_run_daily_publishes_after_successful_discover(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    calls = {}
+
+    def fake_discover(cfg, conn, limit):
+        calls["limit"] = limit
+        return 3
+
+    def fake_publish(cfg, conn, auto):
+        calls["auto"] = auto
+        return {
+            "posted": 0, "failed": 0, "skipped": 0,
+            "not_due": True, "reason": "not_due",
+        }
+
+    monkeypatch.setattr(cli, "run_discover", fake_discover)
+    monkeypatch.setattr(cli, "run_publish", fake_publish)
+    _spy_alert(monkeypatch)
+    assert cli.main(["run-daily", "--auto"]) == 0
+    assert calls == {"limit": None, "auto": True}
+
+
+def test_run_daily_skips_publish_when_discover_fails(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    monkeypatch.setattr(cli, "run_discover", lambda cfg, conn, limit: 0)
+    monkeypatch.setattr(
+        cli, "run_publish",
+        lambda cfg, conn, auto: pytest.fail("publish must not run"),
+    )
+    assert cli.main(["run-daily", "--auto"]) == 1
+
+
+def test_run_daily_propagates_publish_failure(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    monkeypatch.setattr(cli, "run_discover", lambda cfg, conn, limit: 3)
+    monkeypatch.setattr(
+        cli, "run_publish",
+        lambda cfg, conn, auto: {
+            "posted": 0, "failed": 0, "skipped": 0,
+            "not_due": False, "reason": None,
+        },
+    )
+    _spy_alert(monkeypatch)
+    assert cli.main(["run-daily", "--auto"]) == 1
+
+
+def test_run_discover_persists_desc_orig(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    feed = [
+        {"video_id": "v1", "region": "RW", "author": {"unique_id": "u1", "nickname": "U1"},
+         "play": "https://cdn.test/1.mp4", "title": "first", "digg_count": 300,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v2", "region": "RW", "author": {"unique_id": "u2", "nickname": "U2"},
+         "play": "https://cdn.test/2.mp4", "title": "second", "digg_count": 200,
+         "play_count": 10, "share_count": 1, "duration": 12},
+    ]
+
+    def fake_download(item, dest_dir, client):
+        return tmp_path / f"{item['video_id']}.mp4", "h" + item["video_id"]
+
+    monkeypatch.setattr(cli.discover, "fetch_feed", lambda client, region, count: feed)
+    monkeypatch.setattr(cli.download, "download", fake_download)
+    monkeypatch.setattr(
+        cli.transform, "transform",
+        lambda src, dst, account, enabled=True, style="bar": dst,
+    )
+    monkeypatch.setattr(cli.alert, "send", lambda *a, **k: False)
+
+    assert cli.main(["discover"]) == 0
+
+    expected = cli.discover.parse_items(feed, "RW")[0]["desc"]
+    assert expected == "first"
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    rows = {r["video_id"]: r for r in conn.execute("SELECT * FROM videos")}
+    conn.close()
+    assert rows["v1"]["desc_orig"] == expected
+    assert rows["v2"]["desc_orig"] == "second"
+
+
+def test_status_reports_last_run_and_next_slot(tmp_path, monkeypatch, capsys):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    db.insert_candidates(conn.cursor(), [{"video_id": "v1", "desc_orig": "d"}])
+    db.log(conn.cursor(), "v1", "staged", "path")
+    conn.commit()
+    conn.close()
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    last = [ln for ln in out.splitlines() if ln.startswith("last run: ")]
+    assert last and "staged" in last[0]
+    nxt = [ln for ln in out.splitlines() if ln.startswith("next slot: ")]
+    assert nxt and re.match(r"next slot: \d{2}:\d{2} (today|tomorrow)$", nxt[0])
+
+
+def test_status_without_history_says_never(tmp_path, monkeypatch, capsys):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    assert cli.main(["status"]) == 0
+    assert "last run: never" in capsys.readouterr().out

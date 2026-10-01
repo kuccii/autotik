@@ -6,3 +6,4 @@ cookies/
 .env
 *.sqlite
 *.mp4
+.superpowers/

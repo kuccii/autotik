@@ -160,3 +160,9 @@ def log(cur, video_id, event, detail=""):
         "INSERT INTO post_log (video_id, event, detail, ts) VALUES (?,?,?,?)",
         (video_id, event, detail, _now()),
     )
+
+
+def last_log(cur):
+    return cur.execute(
+        "SELECT * FROM post_log ORDER BY id DESC LIMIT 1"
+    ).fetchone()

@@ -72,10 +72,14 @@ docker compose run --rm autotik discover
 Container `TZ` does not affect host cron: set the host clock with
 `timedatectl set-timezone Africa/Kigali` or the schedule fires 2h late.
 
-`POSTS_PER_DAY` is the real cap: extra publish runs find the budget spent
-and exit 0. A failed 08:00 row is not retried (re-staging requires an
-explicit approve); the 13:30 run posts the next approved row instead —
-the failure consumed no budget.
+`POSTS_PER_DAY` is the real cap and publish counts today's slots
+(`PUBLISH_SLOTS`, Africa/Kigali): a `publish --auto` run before the first
+slot exits 0 with `not_due` (no alert), a run after the budget is spent
+exits 0 with `budget spent`, and only a due run with budget left and
+nothing approved exits 1 and alerts. A failed 08:00 row is not retried —
+failed rows are terminal (there is no CLI path from `failed` back to
+`staged`); the 13:30 run posts the next approved row instead — the
+failure consumed no budget.
 
 ## Acceptance gate
 
@@ -101,7 +105,7 @@ Compose v5.1.4, image built from `mcr.microsoft.com/playwright/python:v1.61.0-no
 | 1. Unit suite | `python -m pytest -v` (local) | **63 passed, 1 skipped** (skipped: ffmpeg not installed locally) |
 | 2. Discover x2 | `docker compose run --rm autotik discover` (twice) | Run 1: `staged 4` exit 0. Run 2: `staged 4` exit 0 -- the tikwm feed rotates, so run 2 returned 4 *new* ids; DB holds **8 distinct video_id, 0 duplicates, 0 `duplicate_hash` events**. Deterministic feed-replay probe with an already-known id: `no new rows` -> **exit 1** -- dedup proven; zero-row exit-1 path exercised (its alert send returned False -- see step 7). One `transform_failed` row logged: `output too small (683237 < 1000000)` (min-size guard). |
 | 3. Transform (real ffmpeg) | ffprobe of every `*_tf.mp4` vs its source | 9 downloaded / 8 transformed; **all portrait 576x1024 (one 576x1022)**, duration delta vs source **0.00 s** on all 8 -> `ALL_OK` |
-| 4. Caption (OpenRouter) | `rewrite_caption(...)` | **Fell back to the original text, no traceback** (contract holds). Live rewrite not reachable: the key on the VPS (`sk-UVBUG...`) is an OpenCode Zen key (`OPENROUTER_BASE_URL=https://opencode.ai/zen/v1` in sibling `.env`s) and `openrouter.ai` answers **HTTP 401 "Missing Authentication header"**. The rewrite branch is covered by unit tests; put a real `sk-or-v1-...` key in `.env` to light it up. Sample input, returned unchanged by the fallback: `Funny pig comedy from Rwanda`. |
+| 4. Caption (OpenRouter) | `rewrite_caption(...)` | **Fell back to the original text, no traceback** (contract holds). Live rewrite not reachable: the key on the VPS is an OpenCode Zen key (`OPENROUTER_BASE_URL=https://opencode.ai/zen/v1` in sibling `.env`s) and `openrouter.ai` answers **HTTP 401 "Missing Authentication header"**. The rewrite branch is covered by unit tests; put a real `sk-or-v1-...` key in `.env` to light it up. Sample input, returned unchanged by the fallback: `Funny pig comedy from Rwanda`. |
 | 5. Stage-only gate | `approve --all` then `publish` | `approved 8`; `{'posted': 0, 'failed': 0, 'skipped': 8}` **exit 0** -- guard held live (`status`: approved=8, staged=0) |
 | 6. Real upload | `publish --auto` | **DEFERRED -- cookie pending; stage-only gate active** (not attempted) |
 | 7. Alert path | `alert.send(webhook, "error", ...)` | **`False`** -- `POST https://n8n.qivook.com/webhook/autotik-alert` answers **404** `The requested webhook "POST autotik-alert" is not registered` (workflow not activated for the production URL). Alerts are currently dropped; activate the n8n workflow to close this. |

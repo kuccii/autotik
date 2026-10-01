@@ -84,3 +84,20 @@ def test_log_and_status_kept_in_sync(tmp_path):
     db.log(cur, "v1", "downloaded", "ok")
     assert db.get(cur, "v1")["status"] == "staged"
     assert cur.execute("SELECT count(*) c FROM post_log").fetchone()["c"] == 1
+
+
+def test_last_log_returns_latest_entry(tmp_path):
+    conn = fresh(tmp_path)
+    cur = conn.cursor()
+    db.log(cur, "v1", "staged", "first")
+    db.log(cur, "v1", "posted", "second")
+    conn.commit()
+    last = db.last_log(cur)
+    assert last["event"] == "posted"
+    assert last["detail"] == "second"
+    assert last["ts"]
+
+
+def test_last_log_on_empty_history_returns_none(tmp_path):
+    conn = fresh(tmp_path)
+    assert db.last_log(conn.cursor()) is None
