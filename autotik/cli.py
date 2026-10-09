@@ -28,6 +28,7 @@ def run_discover(cfg, conn, limit=None):
         if not items:
             return 0
         staged = 0
+        failures = []
         cur = conn.cursor()
         for item in items:
             if db.get(cur, item["video_id"]) is not None:
@@ -35,9 +36,9 @@ def run_discover(cfg, conn, limit=None):
             try:
                 path, digest = download.download(item, videos_dir(cfg), client)
             except download.DownloadError as exc:
-                alert.send(cfg.n8n_webhook_url, "warn", str(exc))
                 db.log(cur, item["video_id"], "download_failed", str(exc)[:300])
                 conn.commit()
+                failures.append(f"download {item['video_id']}: {exc}")
                 continue
             try:
                 out = transform.transform(
@@ -45,7 +46,7 @@ def run_discover(cfg, conn, limit=None):
                     cfg.overlay_account, cfg.overlay_enabled, cfg.overlay_style,
                 )
             except transform.TransformError as exc:
-                alert.send(cfg.n8n_webhook_url, "warn", str(exc))
+                failures.append(f"transform {item['video_id']}: {exc}")
                 db.log(cur, item["video_id"], "transform_failed", str(exc)[:300])
                 try:
                     db.insert_candidates(
@@ -62,7 +63,7 @@ def run_discover(cfg, conn, limit=None):
                         ],
                     )
                 except db.DuplicateHash as dup:
-                    alert.send(cfg.n8n_webhook_url, "warn", str(dup))
+                    failures.append(f"duplicate {item['video_id']}: {dup}")
                     db.log(cur, item["video_id"], "duplicate_hash", str(dup)[:300])
                     conn.commit()
                     continue
@@ -82,12 +83,21 @@ def run_discover(cfg, conn, limit=None):
                 )
                 db.log(cur, item["video_id"], "staged", str(out))
             except db.DuplicateHash as exc:
-                alert.send(cfg.n8n_webhook_url, "warn", str(exc))
+                failures.append(f"duplicate {item['video_id']}: {exc}")
                 db.log(cur, item["video_id"], "duplicate_hash", str(exc)[:300])
                 conn.commit()
                 continue
             staged += 1
             conn.commit()
+        if failures:
+            detail = " | ".join(failures)
+            if len(detail) > 400:
+                detail = detail[:397] + "..."
+            alert.send(
+                cfg.n8n_webhook_url,
+                "warn",
+                f"discover: {len(failures)} failed: {detail}",
+            )
         return staged
 
 

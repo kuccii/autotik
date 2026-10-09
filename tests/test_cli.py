@@ -205,6 +205,56 @@ def test_transform_failure_marks_failed_row_and_continues(tmp_path, monkeypatch)
     conn.close()
 
 
+def test_download_failures_send_single_summary_alert(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    feed = [
+        {"video_id": "v1", "region": "RW", "author": {"unique_id": "u1", "nickname": "U1"},
+         "play": "https://cdn.test/1.mp4", "title": "first", "digg_count": 300,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v2", "region": "RW", "author": {"unique_id": "u2", "nickname": "U2"},
+         "play": "https://cdn.test/2.mp4", "title": "second", "digg_count": 200,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v3", "region": "RW", "author": {"unique_id": "u3", "nickname": "U3"},
+         "play": "https://cdn.test/3.mp4", "title": "third", "digg_count": 100,
+         "play_count": 10, "share_count": 1, "duration": 12},
+    ]
+    sent = []
+
+    def fake_send(url, level, message, client=None):
+        sent.append((level, message))
+        return False
+
+    def fake_download(item, dest_dir, client):
+        if item["video_id"] in ("v1", "v2"):
+            raise cli.download.DownloadError(
+                "host not allowlisted: 'v19.tiktokcdn-eu.com'"
+            )
+        return tmp_path / f"{item['video_id']}.mp4", "h3"
+
+    monkeypatch.setattr(cli.discover, "fetch_feed", lambda client, regions, count: feed)
+    monkeypatch.setattr(cli.download, "download", fake_download)
+    monkeypatch.setattr(
+        cli.transform, "transform",
+        lambda src, dst, account, enabled=True, style="bar": dst,
+    )
+    monkeypatch.setattr(cli.alert, "send", fake_send)
+
+    assert cli.main(["discover"]) == 0
+
+    assert len(sent) == 1, sent
+    level, message = sent[0]
+    assert level == "warn"
+    assert "2 failed" in message
+    assert "download v1" in message and "download v2" in message
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    logs = conn.execute(
+        "SELECT count(*) c FROM post_log WHERE event='download_failed'"
+    ).fetchone()
+    assert logs["c"] == 2
+    assert db.counts(conn.cursor())["staged"] == 1
+    conn.close()
+
+
 def _spy_alert(monkeypatch):
     sent = []
 
