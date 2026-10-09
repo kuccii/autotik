@@ -13,9 +13,39 @@ def payload():
     return json.loads(FIXTURE.read_text(encoding="utf-8"))
 
 
+def titled_payload():
+    data = [dict(item, title=item.get("title") or "placeholder title") for item in payload()["data"]]
+    return dict(payload(), data=data)
+
+
 def test_region_filter_is_client_side():
     items = discover.parse_items(payload()["data"], "RW")
     assert [i["video_id"] for i in items] == ["7691089168365145350"]
+
+
+def test_parse_without_region_filter_keeps_every_country():
+    items = discover.parse_items(titled_payload()["data"])
+    assert [i["region"] for i in items] == ["PK", "RW", "US"]
+
+
+def test_parse_skips_items_without_title():
+    items = discover.parse_items(payload()["data"])
+    assert [i["region"] for i in items] == ["RW", "US"]
+
+
+def test_parse_accepts_region_list_and_is_case_insensitive():
+    items = discover.parse_items(payload()["data"], ["rw", "US"])
+    assert [i["region"] for i in items] == ["RW", "US"]
+
+
+def test_parse_dedupes_video_ids_across_merged_feeds():
+    data = titled_payload()["data"] + titled_payload()["data"][:2]
+    items = discover.parse_items(data)
+    assert [i["video_id"] for i in items] == [
+        "7690264381417950496",
+        "7691089168365145350",
+        "7668358855683853590",
+    ]
 
 
 def test_normalized_shape():
@@ -57,11 +87,46 @@ def test_fetch_returns_data_and_hits_endpoint_once():
         return httpx.Response(200, json=payload())
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    data = discover.fetch_feed(client, region="RW", count=20)
+    data = discover.fetch_feed(client, regions="RW", count=20)
     assert len(data) == 3
     assert len(seen) == 1
     assert "region=RW" in seen[0]
     assert "count=20" in seen[0]
+
+
+def test_fetch_merges_multiple_regions_with_rate_limit_spacing(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(200, json=payload())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    data = discover.fetch_feed(client, ["RW", "US", "GB"], 20)
+    assert len(seen) == 3
+    assert "region=RW" in seen[0]
+    assert "region=US" in seen[1]
+    assert "region=GB" in seen[2]
+    assert len(data) == 9
+
+
+def test_fetch_spaces_region_calls_by_one_second(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(discover.time, "sleep", sleeps.append)
+
+    def handler(request):
+        return httpx.Response(200, json=payload())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    discover.fetch_feed(client, ["RW", "US"], 20)
+    assert sleeps == [discover.REGION_SPACING]
+
+
+def test_fetch_with_no_regions_raises():
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    with pytest.raises(discover.DiscoveryError, match="no discovery regions"):
+        discover.fetch_feed(client, [], 20)
 
 
 def test_fetch_retries_on_rate_limit_then_succeeds(monkeypatch):
@@ -88,3 +153,45 @@ def test_fetch_raises_after_exhausting_retries(monkeypatch):
     client = httpx.Client(transport=httpx.MockTransport(handler))
     with pytest.raises(discover.DiscoveryError):
         discover.fetch_feed(client, "RW", 20)
+
+
+def test_fetch_continues_past_transient_region_error(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+
+    def handler(request):
+        if "region=RW" in str(request.url):
+            return httpx.Response(200, json={"code": -1, "msg": "Oops, an error occurred! Try again"})
+        return httpx.Response(200, json=payload())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    data = discover.fetch_feed(client, ["RW", "US"], 20)
+    assert [i["region"] for i in data] == ["PK", "RW", "US"]
+
+
+def test_fetch_rate_limited_region_keeps_partial_results(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+
+    def handler(request):
+        if "region=US" in str(request.url):
+            return httpx.Response(531, text="rate limited")
+        return httpx.Response(200, json=payload())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    data = discover.fetch_feed(client, ["RW", "US"], 20)
+    assert len(data) == 3
+
+
+def test_fetch_every_region_failing_raises(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if "region=RW" in str(request.url):
+            return httpx.Response(531, text="rate limited")
+        return httpx.Response(200, json={"code": -1, "msg": "Oops, an error occurred! Try again"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(discover.DiscoveryError):
+        discover.fetch_feed(client, ["RW", "US"], 20)
+    assert calls["n"] > 0

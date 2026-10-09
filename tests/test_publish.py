@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -145,6 +146,31 @@ def test_cap_accounts_for_already_posted_today(tmp_path):
     assert counts["approved"] == 2
 
 
+def test_one_missed_slot_does_not_double_post(tmp_path, monkeypatch):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    db.insert_candidates(cur, [row("v4", tmp_path)])
+    db.set_status(cur, "v4", "approved")
+    db.set_status(cur, "v4", "posted")
+    stamp = datetime.now(ZoneInfo("Africa/Kigali")).astimezone(timezone.utc)
+    cur.execute(
+        "UPDATE videos SET posted_at=? WHERE video_id=?",
+        (stamp.isoformat(timespec="seconds"), "v4"),
+    )
+    conn.commit()
+    monkeypatch.setattr(publish, "slots_elapsed", lambda cfg, now=None: 2)
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="4"), conn, auto=True,
+        uploader=lambda *a: None, client=no_net(),
+    )
+    # 2 slots elapsed, 1 already posted -> exactly ONE more this run
+    # (the old formula allowed min(cap-already, elapsed) = 2: a burst)
+    assert out["posted"] == 1
+    counts = db.counts(cur)
+    assert counts["posted"] == 2
+    assert counts["approved"] == 2
+
+
 def test_failure_marks_row_and_stops_batch(tmp_path):
     conn = make_conn(tmp_path)
     calls = []
@@ -178,6 +204,23 @@ def test_missing_file_marks_failed_but_batch_continues(tmp_path):
     assert db.counts(cur)["failed"] == 1
     assert db.counts(cur)["posted"] == 2
     assert "file missing" in db.get(cur, "v1")["error"]
+
+
+def test_empty_desc_row_fails_and_batch_continues(tmp_path):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    cur.execute("UPDATE videos SET desc_orig='' WHERE video_id='v1'")
+    conn.commit()
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda *a: None, client=no_net(),
+    )
+    assert out["failed"] == 1
+    assert out["posted"] == 2
+    cur = conn.cursor()
+    assert db.counts(cur)["failed"] == 1
+    assert db.counts(cur)["posted"] == 2
+    assert "empty caption" in db.get(cur, "v1")["error"]
 
 
 def test_allowed_today_math():
@@ -230,24 +273,29 @@ def test_error_return_marks_failed_and_alerts(tmp_path, monkeypatch):
     assert not any(level == "error" and "posted" == msg for level, msg in sent)
 
 
-def _fake_uploader_module(monkeypatch, ret, calls):
-    import sys
-    import types
+def _fake_upload_fn(monkeypatch, exc=None, calls=None):
+    if calls is None:
+        calls = []
 
-    fake = types.ModuleType("tiktokautouploader")
+    def fake(video, caption, cookie_path, accountname):
+        calls.append(
+            {
+                "video": video,
+                "caption": caption,
+                "cookie": cookie_path,
+                "accountname": accountname,
+            }
+        )
+        if exc is not None:
+            raise exc
 
-    def upload_tiktok(**kw):
-        calls.append(kw)
-        return ret
-
-    fake.upload_tiktok = upload_tiktok
-    monkeypatch.setitem(sys.modules, "tiktokautouploader", fake)
-    return fake
+    monkeypatch.setattr(publish, "_run_tiktok_upload", fake)
+    return calls
 
 
 def test_default_uploader_missing_cookie_raises_before_uploader_call(tmp_path, monkeypatch):
     calls = []
-    _fake_uploader_module(monkeypatch, "Completed", calls)
+    _fake_upload_fn(monkeypatch, calls=calls)
     c = cfg(COOKIE_DIR=str(tmp_path / "cookies"))
     upload = publish.default_uploader(c)
     with pytest.raises(publish.PublishError, match="cookie file not found"):
@@ -265,7 +313,7 @@ def test_default_uploader_copies_cookie_to_cwd_and_calls_uploader(tmp_path, monk
     cwd.mkdir()
     monkeypatch.chdir(cwd)
     calls = []
-    _fake_uploader_module(monkeypatch, "Completed", calls)
+    _fake_upload_fn(monkeypatch, calls=calls)
     c = cfg(COOKIE_DIR=str(cookie_dir))
     upload = publish.default_uploader(c)
     upload(tmp_path / "v.mp4", "cap", "@demo")
@@ -275,13 +323,37 @@ def test_default_uploader_copies_cookie_to_cwd_and_calls_uploader(tmp_path, monk
     assert calls[0]["video"].endswith("v.mp4")
 
 
+def test_stage_cookie_normalizes_minimal_export_without_domain(tmp_path, monkeypatch):
+    cookie_dir = tmp_path / "cookies"
+    cookie_dir.mkdir()
+    (cookie_dir / "TK_cookies_demo.json").write_text(
+        '[{"name": "sessionid", "value": "X", "expires": 4102444800,'
+        ' "sameSite": "Lax"}]'
+    )
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    _fake_upload_fn(monkeypatch)
+    c = cfg(COOKIE_DIR=str(cookie_dir))
+    publish.default_uploader(c)(tmp_path / "v.mp4", "cap", "@demo")
+    staged = json.loads((cwd / "TK_cookies_demo.json").read_text())
+    assert staged[0]["domain"] == ".tiktok.com"
+    assert staged[0]["path"] == "/"
+    src = json.loads((cookie_dir / "TK_cookies_demo.json").read_text())
+    assert "domain" not in src[0]
+
+
 def test_default_uploader_raises_on_error_return(tmp_path, monkeypatch):
     cookie_dir = tmp_path / "cookies"
     cookie_dir.mkdir()
     (cookie_dir / "TK_cookies_demo.json").write_text("[]")
     monkeypatch.chdir(tmp_path)
     calls = []
-    _fake_uploader_module(monkeypatch, "Error", calls)
+    _fake_upload_fn(
+        monkeypatch,
+        exc=publish.PublishError("uploader returned 'Error' (expected success)"),
+        calls=calls,
+    )
     c = cfg(COOKIE_DIR=str(cookie_dir))
     upload = publish.default_uploader(c)
     with pytest.raises(publish.PublishError, match="Error"):
@@ -294,7 +366,10 @@ def test_publish_batch_default_uploader_error_marks_failed(tmp_path, monkeypatch
     cookie_dir.mkdir()
     (cookie_dir / "TK_cookies_demo.json").write_text("[]")
     monkeypatch.chdir(tmp_path)
-    _fake_uploader_module(monkeypatch, "Error", [])
+    _fake_upload_fn(
+        monkeypatch,
+        exc=publish.PublishError("uploader returned 'Error' (expected success)"),
+    )
     sent = []
     monkeypatch.setattr(
         publish.alert, "send",

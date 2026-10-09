@@ -23,8 +23,8 @@ def run_discover(cfg, conn, limit=None):
     import httpx
 
     with httpx.Client(follow_redirects=True) as client:
-        feed = discover.fetch_feed(client, cfg.region, fetch)
-        items = discover.rank(discover.parse_items(feed, cfg.region), keep)
+        feed = discover.fetch_feed(client, cfg.discover_regions, fetch)
+        items = discover.rank(discover.parse_items(feed), keep)
         if not items:
             return 0
         staged = 0
@@ -166,7 +166,7 @@ def cmd_status(cfg, conn, args):
     c = db.counts(cur)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     allowed = publish.allowed_today(db.posted_today(cur, today), cfg.posts_per_day, cfg.max_posts_per_day)
-    print(f"date={today} region={cfg.region} stage_only={cfg.stage_only}")
+    print(f"date={today} region={cfg.region} regions={','.join(cfg.discover_regions)} stage_only={cfg.stage_only}")
     print("counts: " + ", ".join(f"{k}={v}" for k, v in sorted(c.items())))
     print(f"remaining today: {allowed}")
     last = db.last_log(cur)

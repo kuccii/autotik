@@ -41,6 +41,21 @@ def test_posts_per_day_clamped_to_max():
     assert cfg.posts_per_day == 3
 
 
+def test_discover_regions_defaults_to_home_region():
+    cfg = load_config(base_env())
+    assert cfg.discover_regions == ("RW",)
+
+
+def test_discover_regions_parses_dedupes_and_uppercases():
+    cfg = load_config(base_env(DISCOVER_REGIONS="rw, us ,gb,rw"))
+    assert cfg.discover_regions == ("RW", "US", "GB")
+
+
+def test_discover_regions_rejects_bad_country_code():
+    with pytest.raises(ConfigError, match="2-letter ISO"):
+        load_config(base_env(DISCOVER_REGIONS="RW,USA"))
+
+
 def test_invalid_overlay_account_rejected():
     with pytest.raises(ConfigError):
         load_config(base_env(OVERLAY_ACCOUNT="@bad:handle"))

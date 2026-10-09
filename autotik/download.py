@@ -10,6 +10,7 @@ ALLOWED_HOST_SUFFIXES = (
     "tiktok.com",
     "tiktokcdn.com",
     "tiktokcdn-us.com",
+    "tiktokcdn-eu.com",
     "tiktokv.com",
     "tiktokv.us",
     "tikwm.com",

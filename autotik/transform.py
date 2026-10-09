@@ -92,11 +92,19 @@ def transform(src, dst, account, enabled=True, style="bar", runner=subprocess.ru
         raise TransformError(f"probe failed for {src}: {exc}") from exc
 
     vf, _, _ = build_filters(info["width"], info["height"], account, style)
-    cmd = [
-        "ffmpeg", "-y", "-i", str(src), "-vf", vf,
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-        "-c:a", "copy", "-movflags", "+faststart", str(dst),
-    ]
+    if ";" in vf:
+        cmd = [
+            "ffmpeg", "-y", "-i", str(src),
+            "-filter_complex", vf, "-map", "[vout]", "-map", "0:a?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:a", "copy", "-movflags", "+faststart", str(dst),
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y", "-i", str(src), "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:a", "copy", "-movflags", "+faststart", str(dst),
+        ]
     try:
         result = runner(cmd, capture_output=True, text=True)
     except FileNotFoundError as exc:

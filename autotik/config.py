@@ -5,6 +5,7 @@ from dataclasses import dataclass
 REQUIRED = ("REGION", "TIKTOK_ACCOUNT", "OPENROUTER_API_KEY")
 ACCOUNT_RE = re.compile(r"^@?[A-Za-z0-9_.]{1,30}$")
 SLOT_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+REGION_CODE_RE = re.compile(r"^[A-Z]{2}$")
 TRUTHY = ("1", "true", "yes", "on")
 FALSY = ("0", "false", "no", "off")
 
@@ -24,6 +25,7 @@ class Config:
     cookie_dir: str
     discover_fetch: int
     discover_keep: int
+    discover_regions: tuple[str, ...]
     posts_per_day: int
     max_posts_per_day: int
     publish_slots: tuple[str, ...]
@@ -78,8 +80,21 @@ def load_config(env=None) -> Config:
     max_posts = max(1, _int(env.get("MAX_POSTS_PER_DAY"), 3))
     posts = min(max(1, _int(env.get("POSTS_PER_DAY"), 1)), max_posts)
 
+    region = env.get("REGION", "RW").strip().upper()
+    regions = tuple(dict.fromkeys(
+        r.strip().upper()
+        for r in env.get("DISCOVER_REGIONS", "").split(",")
+        if r.strip()
+    ))
+    for code in regions:
+        if not REGION_CODE_RE.match(code):
+            raise ConfigError(
+                f"DISCOVER_REGIONS entry {code!r} must be a 2-letter ISO country code"
+            )
+
     return Config(
-        region=env.get("REGION", "RW").strip().upper(),
+        region=region,
+        discover_regions=regions or (region,),
         account=env["TIKTOK_ACCOUNT"].strip(),
         openrouter_api_key=env["OPENROUTER_API_KEY"].strip(),
         openrouter_model=env.get("OPENROUTER_MODEL", "openrouter/free").strip(),
