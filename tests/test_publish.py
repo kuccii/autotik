@@ -223,6 +223,24 @@ def test_empty_desc_row_fails_and_batch_continues(tmp_path):
     assert "empty caption" in db.get(cur, "v1")["error"]
 
 
+def test_empty_desc_row_does_not_consume_post_slot(tmp_path):
+    # empty-desc rows are dropped from the pool before the loop so they cannot
+    # eat one of the day's allowed slots
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    cur.execute("UPDATE videos SET desc_orig='' WHERE video_id='v1'")
+    conn.commit()
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="1"), conn, auto=True,
+        uploader=lambda *a: None, client=no_net(),
+    )
+    assert out["failed"] == 1
+    assert out["posted"] == 1
+    cur = conn.cursor()
+    assert db.get(cur, "v2")["status"] == "posted"
+    assert "empty caption" in db.get(cur, "v1")["error"]
+
+
 def test_allowed_today_math():
     assert publish.allowed_today(posted=0, posts_per_day=1, max_posts=3) == 1
     assert publish.allowed_today(posted=2, posts_per_day=1, max_posts=3) == 0

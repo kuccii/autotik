@@ -48,6 +48,14 @@ def test_parse_dedupes_video_ids_across_merged_feeds():
     ]
 
 
+def test_parse_skips_items_with_dict_title():
+    # some tikwm payloads return a dict for title; must skip, not crash the run
+    data = titled_payload()["data"]
+    data = [dict(item, title={"text": "hi"}) if item.get("region") == "RW" else item for item in data]
+    items = discover.parse_items(data)
+    assert [i["region"] for i in items] == ["PK", "US"]
+
+
 def test_normalized_shape():
     item = discover.parse_items(payload()["data"], "RW")[0]
     assert item["author"] == "akabenzi_vs_abayisiramu"

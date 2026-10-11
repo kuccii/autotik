@@ -196,6 +196,13 @@ def _content_snapshot(page, wait_ms=9000):
         _dismiss_any(page, _CONSENT_SELECTORS, rounds=3)
     page.wait_for_timeout(wait_ms)
     text = page.inner_text("body")
+    # a dead/invalid session redirects the Studio content page to the login
+    # wall; surface it explicitly instead of the opaque "Posts count missing"
+    if "/login" in page.url:
+        raise PublishError(
+            "tiktok session invalid (redirected to login wall); "
+            "re-export cookies and replace the cookie file"
+        )
     m = re.search(r"Posts\s+(\d+)", text)
     ids = set(re.findall(r"/video/(\d{15,25})", page.content()))
     return (int(m.group(1)) if m else None), ids, text
@@ -404,13 +411,30 @@ def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
             "not_due": False, "reason": "budget_spent",
         }
 
-    candidates = [r for r in db.rows_with_status(cur, "approved") if r["file_path"]]
-    missing = [r for r in db.rows_with_status(cur, "approved") if not r["file_path"]]
+    approved = db.rows_with_status(cur, "approved")
+    candidates = [r for r in approved if r["file_path"]]
+    missing = [r for r in approved if not r["file_path"]]
+    # drop rows that cannot produce a caption before they can consume a slot
+    unusable = [
+        r for r in candidates
+        if not (r["desc_orig"] or "").strip()
+    ]
+    unusable_ids = {r["video_id"] for r in unusable}
+    candidates = [r for r in candidates if r["video_id"] not in unusable_ids]
 
     result = {"posted": 0, "failed": 0, "skipped": len(missing), "not_due": False, "reason": None}
     for row in missing:
         db.set_status(cur, row["video_id"], "failed", "no file_path recorded")
         alert.send(cfg.n8n_webhook_url, "warn", f"missing file for {row['video_id']}")
+    for row in unusable:
+        db.set_status(cur, row["video_id"], "failed", "empty caption: source desc is empty")
+        db.log(cur, row["video_id"], "upload_failed", "empty caption, refusing to post")
+        result["failed"] += 1
+    if unusable:
+        alert.send(
+            cfg.n8n_webhook_url, "warn",
+            f"{len(unusable)} approved row(s) skipped: empty source desc",
+        )
     conn.commit()
 
     own_client = client is None

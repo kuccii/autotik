@@ -97,7 +97,10 @@ def parse_items(payload, regions=None):
         author = raw.get("author") or {}
         unique_id = author.get("unique_id") or ""
         video_id = raw.get("video_id")
-        title = (raw.get("title") or "").strip()
+        raw_title = raw.get("title")
+        if not isinstance(raw_title, str):
+            continue
+        title = raw_title.strip()
         if not video_id or not unique_id or not raw.get("play") or not title:
             continue
         if video_id in seen:
