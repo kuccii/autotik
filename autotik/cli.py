@@ -171,6 +171,20 @@ def cmd_publish(cfg, conn, args):
     return 0
 
 
+def cmd_session_check(cfg, conn, args):
+    try:
+        result = publish.session_check(cfg)
+    except publish.PublishError as exc:
+        print(f"session check FAILED: {exc}", file=sys.stderr)
+        alert.send(
+            cfg.n8n_webhook_url, "error",
+            f"tiktok session check FAILED: {exc}",
+        )
+        return 1
+    print(f"session ok: posts={result['posts']}")
+    return 0
+
+
 def cmd_status(cfg, conn, args):
     cur = conn.cursor()
     c = db.counts(cur)
@@ -213,6 +227,11 @@ def build_parser():
 
     sub.add_parser("status", help="counts and remaining budget")
 
+    sub.add_parser(
+        "session-check",
+        help="open the persistent profile, verify the session, keep it alive",
+    )
+
     r = sub.add_parser("run-daily", help="discover then publish")
     r.add_argument("--auto", action="store_true")
     return p
@@ -222,6 +241,7 @@ COMMANDS = {
     "discover": cmd_discover,
     "approve": cmd_approve,
     "publish": cmd_publish,
+    "session-check": cmd_session_check,
     "status": cmd_status,
     "run-daily": cmd_run_daily,
 }

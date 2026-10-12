@@ -215,6 +215,8 @@ def _run_tiktok_upload(video, caption, cookie_path, accountname):
         from playwright.sync_api import sync_playwright
     from tiktokautouploader import function as fn
 
+    from autotik import session
+
     def log(msg):
         print(f"[publish:{accountname}] {msg}", flush=True)
 
@@ -222,17 +224,9 @@ def _run_tiktok_upload(video, caption, cookie_path, accountname):
     if not caption:
         raise PublishError("empty caption, refusing to post")
 
-    cookies = json.loads(Path(cookie_path).read_text(encoding="utf-8"))
-    for c in cookies:
-        if not c.get("url") and not (c.get("domain") and c.get("path")):
-            c.setdefault("domain", ".tiktok.com")
-            c.setdefault("path", "/")
-
     shot = Path("/app/data/upload_state.png")
     with sync_playwright() as p:
-        browser, context = fn._make_stealth_context(p, headless=True, proxy=None)
-        context.add_cookies(cookies)
-        page = context.new_page()
+        context, page = session.open_context(p, cookie_path)
         try:
             baseline, ids_before, _ = _content_snapshot(page)
             if baseline is None:
@@ -384,6 +378,41 @@ def default_uploader(cfg):
         )
 
     return upload
+
+
+def session_check(cfg):
+    """Pre-flight + keep-alive: open the persistent profile, load the Studio
+    content page (raises PublishError on the login wall), dwell like a human
+    briefly, and confirm the session still reads the Posts count."""
+    cookie = _stage_cookie(cfg, cfg.account)
+    try:
+        from phantomwright_driver.sync_api import sync_playwright
+    except ImportError:
+        from playwright.sync_api import sync_playwright
+
+    from autotik import session
+
+    with sync_playwright() as p:
+        context, page = session.open_context(p, str(cookie))
+        try:
+            posts, _ids, _text = _content_snapshot(page, wait_ms=4000)
+            if posts is None:
+                raise PublishError(
+                    "cannot read content page baseline (Posts count missing)"
+                )
+            try:
+                page.mouse.wheel(0, 800)
+                page.wait_for_timeout(1500)
+                page.mouse.wheel(0, -400)
+                page.wait_for_timeout(1500)
+                _content_snapshot(page, wait_ms=2000)
+            except PublishError:
+                raise
+            except Exception:
+                pass
+            return {"ok": True, "posts": posts}
+        finally:
+            context.close()
 
 
 def publish_batch(cfg, conn, auto=False, uploader=None, client=None):

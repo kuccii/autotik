@@ -458,3 +458,37 @@ def test_duplicate_hash_on_failed_path_continues_discovery(tmp_path, monkeypatch
     assert "transform_failed" in events
     conn.close()
     assert not any("crashed" in msg for _, msg in sent)
+
+
+def test_session_check_ok_exits_0(tmp_path, monkeypatch, capsys):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    monkeypatch.setattr(
+        cli.publish, "session_check", lambda cfg: {"ok": True, "posts": 7}
+    )
+    assert cli.main(["session-check"]) == 0
+    assert "session ok: posts=7" in capsys.readouterr().out
+
+
+def test_session_check_login_wall_alerts_and_exits_1(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+
+    def dead(cfg):
+        raise cli.publish.PublishError(
+            "tiktok session invalid (redirected to login wall); "
+            "re-export cookies and replace the cookie file"
+        )
+
+    monkeypatch.setattr(cli.publish, "session_check", dead)
+    sent = _spy_alert(monkeypatch)
+    assert cli.main(["session-check"]) == 1
+    assert sent and sent[0][0] == "error"
+    assert "session check FAILED" in sent[0][1]
+    assert "login wall" in sent[0][1]
+
+
+def test_session_check_missing_cookie_alerts_and_exits_1(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path), COOKIE_DIR=str(tmp_path / "cookies"))
+    sent = _spy_alert(monkeypatch)
+    assert cli.main(["session-check"]) == 1
+    assert sent and sent[0][0] == "error"
+    assert "cookie file not found" in sent[0][1]
