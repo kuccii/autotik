@@ -404,3 +404,17 @@ def test_publish_batch_default_uploader_error_marks_failed(tmp_path, monkeypatch
     assert counts["failed"] == 1
     assert counts["posted"] == 0
     assert any(level == "error" for level, _ in sent)
+
+
+def test_popup_selectors_are_modal_scoped():
+    # page-level Cancel on the upload page opens the cancel-upload confirm
+    # modal and blocks the caption editor -- never click outside TUXModal
+    assert publish._POPUP_SELECTORS
+    assert all(sel.startswith(".TUXModal ") for sel in publish._POPUP_SELECTORS)
+
+
+def test_defuse_handles_no_only_confirm_modals():
+    import inspect
+
+    src = inspect.getsource(publish._defuse_overlays)
+    assert "button:text-is('No')" in src
