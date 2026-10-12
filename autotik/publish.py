@@ -15,10 +15,12 @@ _CONSENT_SELECTORS = [
     'button:has-text("Decline optional cookies")',
 ]
 _POPUP_SELECTORS = [
-    "button:has-text('Cancel')",
-    "button:has-text('Got it')",
-    "button:has-text('Close')",
-    "button:has-text('Skip')",
+    # Scoped to TUXModal: the upload page has its own page-level "Cancel"
+    # button that opens a "cancel upload?" confirm modal covering the editor.
+    ".TUXModal button:has-text('Cancel')",
+    ".TUXModal button:has-text('Got it')",
+    ".TUXModal button:has-text('Close')",
+    ".TUXModal button:has-text('Skip')",
 ]
 KIGALI = ZoneInfo("Africa/Kigali")
 SYSTEM_PROMPT = (
@@ -155,6 +157,54 @@ def _dismiss_any(page, selectors, rounds=6):
     return clicked
 
 
+def _diag_caption_failure(page, shot, log, exc):
+    """Capture evidence when the caption editor cannot be clicked: screenshot
+    plus what actually sits at the editor's centre and which dialogs are open."""
+    log(f"caption click error: {str(exc)[:300]}")
+    try:
+        page.screenshot(path=str(shot))
+        log(f"failure screenshot: {shot}")
+    except Exception:
+        pass
+    try:
+        info = page.evaluate(
+            """() => {
+                const out = {covered_by: null, dialogs: []};
+                const el = document.querySelector('div[data-contents="true"]');
+                if (el) {
+                    const r = el.getBoundingClientRect();
+                    const at = document.elementFromPoint(
+                        r.left + r.width / 2, r.top + r.height / 2);
+                    if (at) {
+                        const chain = [];
+                        let n = at;
+                        while (n && chain.length < 5) {
+                            chain.push(
+                                n.tagName + '.' +
+                                String(n.className || '').slice(0, 70));
+                            n = n.parentElement;
+                        }
+                        out.covered_by = chain;
+                    }
+                }
+                for (const d of document.querySelectorAll(
+                        '.TUXModal-overlay, [role="dialog"]')) {
+                    const r = d.getBoundingClientRect();
+                    if (r.width && r.height) {
+                        out.dialogs.push(
+                            String(d.className || '').slice(0, 60) + ' :: ' +
+                            String(d.innerText || '')
+                                .replace(/\\s+/g, ' ').slice(0, 160));
+                    }
+                }
+                return out;
+            }"""
+        )
+        log(f"page diag: {json.dumps(info, ensure_ascii=False)[:900]}")
+    except Exception as diag_exc:
+        log(f"page diag failed: {str(diag_exc)[:150]}")
+
+
 def _defuse_overlays(page, seconds=8):
     """TikTok renders modals AFTER the file is processed on an unpredictable
     delay ('Turn on automatic content checks?', coach marks); close whatever
@@ -178,6 +228,15 @@ def _defuse_overlays(page, seconds=8):
             ).first
             if neutral.is_visible():
                 neutral.click(timeout=1500)
+                time.sleep(0.5)
+                continue
+        except Exception:
+            pass
+        try:
+            # cancel/discard-style confirm modals answer with No/Yes only
+            no_btn = page.locator(".TUXModal button:text-is('No')").first
+            if no_btn.is_visible():
+                no_btn.click(timeout=1500)
                 time.sleep(0.5)
                 continue
         except Exception:
@@ -253,17 +312,23 @@ def _run_tiktok_upload(video, caption, cookie_path, accountname):
             _defuse_overlays(page, seconds=8)
 
             desc_box = page.locator('div[data-contents="true"]').first
+            last_exc = None
             for attempt in range(3):
                 try:
                     sim.click(desc_box)
                     break
-                except Exception:
+                except Exception as exc:
+                    last_exc = exc
                     log(f"caption editor blocked (attempt {attempt + 1})")
                     _defuse_overlays(page, seconds=6)
                     _dismiss_any(page, _POPUP_SELECTORS, rounds=2)
                     time.sleep(0.5)
             else:
-                raise PublishError("caption editor unreachable (overlay persists)")
+                _diag_caption_failure(page, shot, log, last_exc)
+                raise PublishError(
+                    "caption editor unreachable (overlay persists): "
+                    f"{str(last_exc)[:200]}"
+                )
             time.sleep(0.5)
             for _ in range(len(caption) + 5):
                 page.keyboard.press("Backspace")
