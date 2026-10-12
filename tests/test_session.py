@@ -42,6 +42,40 @@ def test_cookie_sha_changes_with_content(tmp_path):
     assert session.cookie_sha(a) != sha1
 
 
+def test_normalize_cookies_maps_cookie_editor_export():
+    raw = [
+        {
+            "name": "sessionid", "value": "0d35", "domain": ".tiktok.com",
+            "path": "/", "sameSite": None, "secure": True, "httpOnly": True,
+            "expirationDate": 1807344556.156751, "storeId": None,
+            "hostOnly": False, "session": False,
+        },
+        {
+            "name": "s_v_web_id", "value": "verify_x", "domain": ".tiktok.com",
+            "path": "/", "sameSite": "no_restriction", "secure": True,
+            "session": True,
+        },
+        {
+            "name": "tt_csrf_token", "value": "Kx4", "domain": ".tiktok.com",
+            "path": "/", "sameSite": "lax", "expires": None,
+        },
+        {"name": "", "value": "x"},
+        {"value": "no-name"},
+        "junk",
+    ]
+    out = session.normalize_cookies(raw)
+    assert [c["name"] for c in out] == ["sessionid", "s_v_web_id", "tt_csrf_token"]
+    a = out[0]
+    assert "sameSite" not in a
+    assert a["expires"] == 1807344556.156751
+    assert "storeId" not in a and "hostOnly" not in a and "session" not in a
+    assert out[1]["sameSite"] == "None" and "expires" not in out[1]
+    assert out[2]["sameSite"] == "Lax" and "expires" not in out[2]
+    minimal = session.normalize_cookies([{"name": "d", "value": "4"}])[0]
+    assert minimal["domain"] == ".tiktok.com" and minimal["path"] == "/"
+    assert session.normalize_cookies({"not": "a list"}) == []
+
+
 def test_user_agent_is_windows_chrome_without_headless():
     ua = session.USER_AGENT
     assert "HeadlessChrome" not in ua

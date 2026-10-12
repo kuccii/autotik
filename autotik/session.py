@@ -207,6 +207,40 @@ def mark_cookie_import(pdir, cookie_path):
     marker.write_text(cookie_sha(cookie_path), encoding="utf-8")
 
 
+_SAMESITE = {"strict": "Strict", "lax": "Lax", "none": "None", "no_restriction": "None"}
+
+
+def normalize_cookies(cookies):
+    """Map a raw Cookie-Editor export onto Playwright's add_cookies schema.
+
+    sameSite null / "no_restriction", expirationDate vs expires, and
+    browser-store keys (storeId, hostOnly, session) are rejected raw --
+    a re-export must never take the profile down because of them."""
+    out = []
+    if not isinstance(cookies, list):
+        return out
+    for c in cookies:
+        if not isinstance(c, dict) or not c.get("name") or c.get("value") is None:
+            continue
+        c = dict(c)
+        if not c.get("url") and not (c.get("domain") and c.get("path")):
+            c.setdefault("domain", ".tiktok.com")
+            c.setdefault("path", "/")
+        ss = c.pop("sameSite", None)
+        mapped = _SAMESITE.get(ss.lower()) if isinstance(ss, str) and ss else None
+        if mapped:
+            c["sameSite"] = mapped
+        exp = c.pop("expirationDate", None)
+        if c.get("expires") is None:
+            c.pop("expires", None)
+            if exp is not None:
+                c["expires"] = float(exp)
+        for k in ("storeId", "hostOnly", "session", "id"):
+            c.pop(k, None)
+        out.append(c)
+    return out
+
+
 # keep CDP session objects alive for the process lifetime (browser-side the
 # override persists regardless, but never rely on GC behaviour)
 _CDP_SESSIONS = []
@@ -255,11 +289,11 @@ def open_context(p, cookie_path, headless=True):
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         _apply_client_hints(ctx, page)
         if needs_cookie_import(pdir, cookie_path):
-            cookies = json.loads(Path(cookie_path).read_text(encoding="utf-8"))
-            for c in cookies:
-                if not c.get("url") and not (c.get("domain") and c.get("path")):
-                    c.setdefault("domain", ".tiktok.com")
-                    c.setdefault("path", "/")
+            cookies = normalize_cookies(
+                json.loads(Path(cookie_path).read_text(encoding="utf-8"))
+            )
+            if not cookies:
+                raise ValueError(f"cookie file has no usable cookies: {cookie_path}")
             ctx.add_cookies(cookies)
             mark_cookie_import(pdir, cookie_path)
     except Exception:
