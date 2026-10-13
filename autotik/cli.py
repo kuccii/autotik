@@ -29,6 +29,7 @@ def run_discover(cfg, conn, limit=None):
         feed = discover.fetch_feed(client, cfg.discover_regions, fetch)
         items = discover.parse_items(feed)
         items = discover.filter_by_age(items, now, cfg.discover_max_age_days)
+        items = discover.filter_by_likes(items, cfg.discover_min_likes)
         items = [i for i in items if db.get(cur, i["video_id"]) is None]
         items = discover.rank(items, keep, now)
         if not items:

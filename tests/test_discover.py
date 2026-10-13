@@ -124,6 +124,22 @@ def test_filter_by_age_rejects_stale_items():
     assert [i["video_id"] for i in kept] == ["fresh", "boundary", "no_time"]
 
 
+def test_filter_by_likes_enforces_threshold():
+    items = [
+        {"video_id": "viral", "digg_count": 2_500_000},
+        {"video_id": "exact", "digg_count": 1_000_000},
+        {"video_id": "close", "digg_count": 999_999},
+        {"video_id": "zero", "digg_count": 0},
+    ]
+    kept = discover.filter_by_likes(items, 1_000_000)
+    assert [i["video_id"] for i in kept] == ["viral", "exact"]
+
+
+def test_filter_by_likes_disabled_when_zero():
+    items = [{"video_id": "any", "digg_count": 5}]
+    assert discover.filter_by_likes(items, 0) == items
+
+
 def test_fetch_returns_data_and_hits_endpoint_once():
     seen = []
 

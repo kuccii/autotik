@@ -11,6 +11,7 @@ def env(monkeypatch, **over):
         "REGION": "RW", "TIKTOK_ACCOUNT": "@demo",
         "OPENROUTER_API_KEY": "sk-test", "N8N_WEBHOOK_URL": "",
         "DATA_DIR": "", "COOKIE_DIR": "",
+        "DISCOVER_MIN_LIKES": "0",
     }
     base.update(over)
     for k, v in base.items():

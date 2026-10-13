@@ -138,6 +138,12 @@ def filter_by_age(items, now, max_age_days):
     return kept
 
 
+def filter_by_likes(items, min_likes):
+    if min_likes <= 0:
+        return items
+    return [i for i in items if (i.get("digg_count") or 0) >= min_likes]
+
+
 def score_item(item, now):
     er = item["digg_count"] / max(item["play_count"], 1)
     age_d = (
