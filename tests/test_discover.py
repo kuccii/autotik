@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import httpx
@@ -77,14 +78,50 @@ def test_rank_orders_by_weighted_score():
         {"video_id": "b", "digg_count": 100, "play_count": 1000, "share_count": 50, "score": 0},
         {"video_id": "c", "digg_count": 1, "play_count": 1, "share_count": 0, "score": 0},
     ]
-    out = discover.rank(items, keep=2)
+    out = discover.rank(items, keep=2, now=1_790_000_000.0)
     assert [i["video_id"] for i in out] == ["b", "a"]
-    assert out[0]["score"] == pytest.approx(1.0)
+    # no create_time -> age falls back to 7d (fresh); engagement rate capped
+    age_d = 7.0
+    expected_b = (
+        0.35 * min((100 / 1000) / 0.08, 1.0)
+        + 0.35 * min(math.log10(1000 / (age_d * 24)) / 6, 1.0)
+        + 0.30
+    )
+    assert out[0]["score"] == pytest.approx(expected_b, abs=1e-6)
 
 
 def test_rank_zero_metrics_does_not_divide_by_zero():
     items = [{"video_id": "z", "digg_count": 0, "play_count": 0, "share_count": 0, "score": 0}]
-    assert discover.rank(items, keep=5)[0]["score"] == 0.0
+    score = discover.rank(items, keep=5, now=1_790_000_000.0)[0]["score"]
+    # zero engagement -> er and velocity terms are 0; freshness floor remains
+    assert score == pytest.approx(0.30)
+
+
+def test_rank_is_batch_invariant():
+    # scores must not depend on which other items share the batch
+    a = {"video_id": "a", "digg_count": 10, "play_count": 100, "share_count": 5, "score": 0}
+    b = {"video_id": "b", "digg_count": 100, "play_count": 1000, "share_count": 50, "score": 0}
+    now = 1_790_000_000.0
+    alone = discover.rank([dict(a)], keep=1, now=now)[0]
+    in_pair = next(
+        i for i in discover.rank([dict(a), dict(b)], keep=2, now=now)
+        if i["video_id"] == "a"
+    )
+    assert alone["score"] == in_pair["score"]
+    assert in_pair["score"] > 0
+
+
+def test_filter_by_age_rejects_stale_items():
+    now = 1_790_000_000.0
+    day = 86400
+    items = [
+        {"video_id": "fresh", "create_time": int(now - 2 * day)},
+        {"video_id": "boundary", "create_time": int(now - 14 * day)},
+        {"video_id": "stale", "create_time": int(now - 30 * day)},
+        {"video_id": "no_time", "create_time": 0},
+    ]
+    kept = discover.filter_by_age(items, now, 14.0)
+    assert [i["video_id"] for i in kept] == ["fresh", "boundary", "no_time"]
 
 
 def test_fetch_returns_data_and_hits_endpoint_once():
@@ -182,6 +219,20 @@ def test_fetch_rate_limited_region_keeps_partial_results(monkeypatch):
     def handler(request):
         if "region=US" in str(request.url):
             return httpx.Response(531, text="rate limited")
+        return httpx.Response(200, json=payload())
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    data = discover.fetch_feed(client, ["RW", "US"], 20)
+    assert len(data) == 3
+
+
+def test_fetch_rate_limited_first_region_still_tries_next(monkeypatch):
+    # a 429 on one region must not abandon the remaining regions
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+
+    def handler(request):
+        if "region=RW" in str(request.url):
+            return httpx.Response(429, text="too many requests")
         return httpx.Response(200, json=payload())
 
     client = httpx.Client(transport=httpx.MockTransport(handler))

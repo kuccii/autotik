@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -41,10 +41,16 @@ def cfg(**over):
     return load_config(env)
 
 
-def no_net(content="rewritten"):
+def no_net(content=None):
+    # default: a unique caption per rewrite call, so the near-duplicate
+    # caption guard never trips tests that post several rows in one batch
+    counter = {"n": 0}
+
     def handler(request):
+        counter["n"] += 1
+        text = content if content is not None else f"rewritten {counter['n']}"
         return httpx.Response(200, json={
-            "choices": [{"message": {"content": content}}]
+            "choices": [{"message": {"content": text}}]
         })
 
     return httpx.Client(transport=httpx.MockTransport(handler))
@@ -171,6 +177,50 @@ def test_one_missed_slot_does_not_double_post(tmp_path, monkeypatch):
     assert counts["approved"] == 2
 
 
+def test_author_cap_prefers_authors_not_posted_in_last_7_days(tmp_path):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    db.set_status(cur, "v1", "posted")
+    stamp = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(
+        timespec="seconds"
+    )
+    cur.execute("UPDATE videos SET posted_at=? WHERE video_id='v1'", (stamp,))
+    cur.execute("UPDATE videos SET author='b' WHERE video_id='v3'")
+    conn.commit()
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda *a: None, client=no_net(),
+    )
+    counts = db.counts(cur)
+    # v2 shares author "a" with the post from 2 days ago -> held back;
+    # v3 (author "b") is the only fresh author, so it takes the slot
+    assert counts["posted"] == 2
+    assert counts["approved"] == 1
+    assert db.get(cur, "v2")["status"] == "approved"
+    assert db.get(cur, "v3")["status"] == "posted"
+    assert out["posted"] == 1
+
+
+def test_author_cap_degrades_when_every_author_posted_within_7_days(tmp_path):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    db.set_status(cur, "v1", "posted")
+    stamp = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(
+        timespec="seconds"
+    )
+    cur.execute("UPDATE videos SET posted_at=? WHERE video_id='v1'", (stamp,))
+    conn.commit()
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda *a: None, client=no_net(),
+    )
+    counts = db.counts(cur)
+    # every candidate's author posted recently -> post anyway instead of stalling
+    assert counts["approved"] == 0
+    assert counts["posted"] == 3
+    assert out["posted"] == 2
+
+
 def test_failure_marks_row_and_stops_batch(tmp_path):
     conn = make_conn(tmp_path)
     calls = []
@@ -265,6 +315,45 @@ def test_rewrite_caption_uses_model_response():
     client = httpx.Client(transport=httpx.MockTransport(handler))
     out = publish.rewrite_caption(client, cfg(), "original")
     assert out == "rewritten #tags"
+
+
+def test_caption_jaccard_similarity():
+    toks = publish.caption_tokens
+    assert publish.jaccard(toks("funny cat video #fyp"), toks("funny cat video #viral")) >= 0.6
+    assert publish.jaccard(toks("hello there"), toks("quantum physics derivation")) == 0.0
+    assert publish.jaccard(set(), toks("anything")) == 0.0
+    assert toks("the cat is on the mat") == {"cat", "mat"}
+
+
+def test_caption_similar_to_recent_post_is_skipped(tmp_path):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    db.insert_candidates(cur, [row("v0", tmp_path)])
+    db.set_status(cur, "v0", "approved")
+    db.set_status(cur, "v0", "posted")
+    old = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat(
+        timespec="seconds"
+    )
+    cur.execute(
+        "UPDATE videos SET caption=?, posted_at=? WHERE video_id='v0'",
+        ("big vibes #fyp #viral", old),
+    )
+    conn.commit()
+    uploaded = []
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3"), conn, auto=True,
+        uploader=lambda *a: uploaded.append(a),
+        client=no_net(content="big vibes #fyp #viral"),
+    )
+    assert out["posted"] == 0
+    assert uploaded == []
+    counts = db.counts(cur)
+    assert counts["approved"] == 3
+    assert counts["failed"] == 0
+    dup = conn.execute(
+        "SELECT count(*) c FROM post_log WHERE event='caption_duplicate'"
+    ).fetchone()
+    assert dup["c"] == 3
 
 def test_error_return_marks_failed_and_alerts(tmp_path, monkeypatch):
     conn = make_conn(tmp_path)

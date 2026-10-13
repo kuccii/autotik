@@ -1,5 +1,6 @@
 import argparse
 import sys
+import time
 import traceback
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -22,17 +23,19 @@ def run_discover(cfg, conn, limit=None):
     keep = limit if limit is not None else cfg.discover_keep
     import httpx
 
+    now = time.time()
+    cur = conn.cursor()
     with httpx.Client(follow_redirects=True) as client:
         feed = discover.fetch_feed(client, cfg.discover_regions, fetch)
-        items = discover.rank(discover.parse_items(feed), keep)
+        items = discover.parse_items(feed)
+        items = discover.filter_by_age(items, now, cfg.discover_max_age_days)
+        items = [i for i in items if db.get(cur, i["video_id"]) is None]
+        items = discover.rank(items, keep, now)
         if not items:
             return 0
         staged = 0
         failures = []
-        cur = conn.cursor()
         for item in items:
-            if db.get(cur, item["video_id"]) is not None:
-                continue
             try:
                 path, digest = download.download(item, videos_dir(cfg), client)
             except download.DownloadError as exc:
@@ -97,6 +100,12 @@ def run_discover(cfg, conn, limit=None):
                 cfg.n8n_webhook_url,
                 "warn",
                 f"discover: {len(failures)} failed: {detail}",
+            )
+        if 0 < staged < 3:
+            alert.send(
+                cfg.n8n_webhook_url,
+                "warn",
+                f"discover: only {staged} new videos staged",
             )
         return staged
 

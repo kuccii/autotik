@@ -1,3 +1,4 @@
+import math
 import time
 
 import httpx
@@ -28,7 +29,8 @@ def fetch_feed(client, regions, count):
         except DiscoveryError as exc:
             errors.append(str(exc))
             if _rate_limited(str(exc)):
-                break
+                time.sleep(10)
+                continue
     if not merged:
         raise DiscoveryError(errors[-1] if errors else "no discovery regions configured")
     return merged
@@ -119,23 +121,43 @@ def parse_items(payload, regions=None):
                 "share_count": int(raw.get("share_count") or 0),
                 "duration": int(raw.get("duration") or 0),
                 "source_url": canonical_url(unique_id, video_id),
+                "create_time": int(raw.get("create_time") or 0),
                 "score": 0.0,
             }
         )
     return items
 
 
-def _norm(values):
-    top = max(values, default=0)
-    if top <= 0:
-        return [0.0 for _ in values]
-    return [v / top for v in values]
+def filter_by_age(items, now, max_age_days):
+    kept = []
+    for item in items:
+        created = item.get("create_time") or 0
+        if created and (now - created) / 86400.0 > max_age_days:
+            continue
+        kept.append(item)
+    return kept
 
 
-def rank(items, keep):
-    digg = _norm([i["digg_count"] for i in items])
-    play = _norm([i["play_count"] for i in items])
-    share = _norm([i["share_count"] for i in items])
-    for i, (d, p, s) in enumerate(zip(digg, play, share)):
-        items[i]["score"] = round(0.5 * d + 0.3 * p + 0.2 * s, 6)
+def score_item(item, now):
+    er = item["digg_count"] / max(item["play_count"], 1)
+    age_d = (
+        max((now - item["create_time"]) / 86400.0, 0.25)
+        if item.get("create_time")
+        else 7.0
+    )
+    vph = item["play_count"] / (age_d * 24.0)
+    freshness = 1.0 if age_d <= 7 else 0.5 if age_d <= 21 else 0.15
+    return round(
+        0.35 * min(er / 0.08, 1.0)
+        + 0.35 * min(math.log10(max(vph, 1)) / 6, 1.0)
+        + 0.30 * freshness,
+        6,
+    )
+
+
+def rank(items, keep, now=None):
+    if now is None:
+        now = time.time()
+    for item in items:
+        item["score"] = score_item(item, now)
     return sorted(items, key=lambda i: i["score"], reverse=True)[:keep]

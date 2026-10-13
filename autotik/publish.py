@@ -2,7 +2,7 @@ import json
 import re
 import shutil
 import time
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,9 +24,14 @@ _POPUP_SELECTORS = [
 ]
 KIGALI = ZoneInfo("Africa/Kigali")
 SYSTEM_PROMPT = (
-    "You rewrite TikTok captions. Return ONLY the new caption: a punchy first "
-    "line, then 3-5 relevant hashtags. Keep it under 150 characters. Never add "
-    "quotes, prefixes, or explanations."
+    "You rewrite TikTok captions for a themed REPOST account: we curate and "
+    "repost other creators' videos, we are NOT the original creator. Return "
+    "ONLY the new caption: a punchy first line, then hashtags. Include 2-3 "
+    "hashtags that fit the account theme and its East Africa / Rwanda "
+    "audience, plus at most 1-2 hashtags from the original caption and only "
+    "if they are trending or on-theme. Vary the hashtag combination every "
+    "time instead of reusing one set. Keep the whole caption under 150 "
+    "characters. Never add quotes, prefixes, or explanations."
 )
 
 
@@ -36,6 +41,48 @@ class PublishError(RuntimeError):
 
 def allowed_today(posted, posts_per_day, max_posts):
     return max(0, min(posts_per_day, max_posts) - posted)
+
+
+def last_7d_posted(cur):
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(
+        timespec="seconds"
+    )
+    rows = cur.execute(
+        "SELECT author FROM videos WHERE status='posted' AND posted_at >= ?",
+        (cutoff,),
+    ).fetchall()
+    return {r["author"] for r in rows if r["author"]}
+
+
+def last_10_posted_captions(cur):
+    rows = cur.execute(
+        "SELECT caption FROM videos WHERE status='posted' "
+        "AND caption IS NOT NULL AND caption != '' "
+        "ORDER BY posted_at DESC LIMIT 10"
+    ).fetchall()
+    return [r["caption"] for r in rows]
+
+
+CAPTION_STOPWORDS = frozenset(
+    """the a an is it to in of and or for on at by with from as are was were
+    be been being have has had do does did will would could should may might
+    shall can need dare ought used into through during before after above
+    below between out off over under again further then once""".split()
+)
+
+
+def caption_tokens(text):
+    return {
+        w
+        for w in re.findall(r"[a-z0-9']+", (text or "").lower())
+        if w not in CAPTION_STOPWORDS
+    }
+
+
+def jaccard(a, b):
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
 
 
 def _slot_minutes(slot):
@@ -515,6 +562,11 @@ def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
     ]
     unusable_ids = {r["video_id"] for r in unusable}
     candidates = [r for r in candidates if r["video_id"] not in unusable_ids]
+    # at most one post per author per 7 days; degrade to any candidate only
+    # when every candidate comes from a recently-posted author
+    recent_authors = last_7d_posted(cur)
+    fresh = [r for r in candidates if r["author"] not in recent_authors]
+    candidates = fresh or candidates
 
     result = {"posted": 0, "failed": 0, "skipped": len(missing), "not_due": False, "reason": None}
     for row in missing:
@@ -561,6 +613,13 @@ def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
                 conn.commit()
                 continue
             caption = rewrite_caption(client, cfg, source) or source
+            if any(
+                jaccard(caption_tokens(caption), caption_tokens(old)) >= 0.6
+                for old in last_10_posted_captions(cur)
+            ):
+                db.log(cur, vid, "caption_duplicate", caption[:120])
+                conn.commit()
+                continue
             try:
                 ret = upload(path, caption, cfg.account)
                 if ret == "Error":

@@ -140,7 +140,10 @@ def test_duplicate_hash_mid_discovery_continues(tmp_path, monkeypatch):
 
     assert cli.main(["discover"]) == 0
 
-    assert [level for level, _ in sent] == ["warn"]
+    failure_alerts = [(lv, m) for lv, m in sent if "failed" in m]
+    assert [lv for lv, _ in failure_alerts] == ["warn"]
+    assert len(failure_alerts) == 1
+    assert any("only 2 new videos staged" in m for _, m in sent)
     conn = db.init_db(tmp_path / "autotik.sqlite")
     assert db.counts(conn.cursor())["staged"] == 2
     dup = conn.execute(
@@ -153,6 +156,57 @@ def test_duplicate_hash_mid_discovery_continues(tmp_path, monkeypatch):
 def test_auto_and_stage_only_conflict_is_exit_2(monkeypatch):
     env(monkeypatch)
     assert cli.main(["publish", "--auto", "--stage-only"]) == 2
+
+
+def test_discover_dedups_known_rows_before_ranking(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path))
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    # seed the top-ranked video so it must not consume a --limit slot
+    db.insert_candidates(
+        conn.cursor(),
+        [{"video_id": "v1", "desc_orig": "seen", "status": "failed"}],
+    )
+    conn.commit()
+    conn.close()
+    feed = [
+        {"video_id": "v1", "region": "RW", "author": {"unique_id": "u1", "nickname": "U1"},
+         "play": "https://cdn.test/1.mp4", "title": "first", "digg_count": 3000,
+         "play_count": 1000, "share_count": 50, "duration": 12},
+        {"video_id": "v2", "region": "RW", "author": {"unique_id": "u2", "nickname": "U2"},
+         "play": "https://cdn.test/2.mp4", "title": "second", "digg_count": 200,
+         "play_count": 10, "share_count": 1, "duration": 12},
+        {"video_id": "v3", "region": "RW", "author": {"unique_id": "u3", "nickname": "U3"},
+         "play": "https://cdn.test/3.mp4", "title": "third", "digg_count": 100,
+         "play_count": 10, "share_count": 1, "duration": 12},
+    ]
+    downloaded = []
+
+    def fake_download(item, dest_dir, client):
+        downloaded.append(item["video_id"])
+        return tmp_path / f"{item['video_id']}.mp4", "h" + item["video_id"]
+
+    monkeypatch.setattr(cli.discover, "fetch_feed", lambda client, region, count: feed)
+    monkeypatch.setattr(cli.download, "download", fake_download)
+    monkeypatch.setattr(
+        cli.transform, "transform",
+        lambda src, dst, account, enabled=True, style="bar": dst,
+    )
+    _spy = []
+    monkeypatch.setattr(
+        cli.alert, "send",
+        lambda url, level, message, client=None: _spy.append((level, message)) or False,
+    )
+
+    assert cli.main(["discover", "--limit", "2"]) == 0
+
+    # dedup happens BEFORE ranking: the known v1 never downloads and both
+    # --limit slots go to genuinely new rows
+    assert downloaded == ["v2", "v3"]
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    counts = db.counts(conn.cursor())
+    assert counts["staged"] == 2
+    assert db.get(conn.cursor(), "v1")["status"] == "failed"
+    conn.close()
 
 def test_transform_failure_marks_failed_row_and_continues(tmp_path, monkeypatch):
     env(monkeypatch, DATA_DIR=str(tmp_path))
@@ -241,8 +295,9 @@ def test_download_failures_send_single_summary_alert(tmp_path, monkeypatch):
 
     assert cli.main(["discover"]) == 0
 
-    assert len(sent) == 1, sent
-    level, message = sent[0]
+    summary = [(lv, m) for lv, m in sent if "failed" in m]
+    assert len(summary) == 1, sent
+    level, message = summary[0]
     assert level == "warn"
     assert "2 failed" in message
     assert "download v1" in message and "download v2" in message

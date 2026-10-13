@@ -3,7 +3,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-TRANSFORM_MIN_BYTES = 1_000_000
+TRANSFORM_MIN_BYTES = 250_000
 FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 TARGET_W, TARGET_H = 1080, 1920
 ASPECT_TOLERANCE = 0.02

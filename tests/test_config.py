@@ -56,6 +56,12 @@ def test_discover_regions_rejects_bad_country_code():
         load_config(base_env(DISCOVER_REGIONS="RW,USA"))
 
 
+def test_discover_max_age_days_default_and_override():
+    assert load_config(base_env()).discover_max_age_days == 14.0
+    assert load_config(base_env(DISCOVER_MAX_AGE_DAYS="7.5")).discover_max_age_days == 7.5
+    assert load_config(base_env(DISCOVER_MAX_AGE_DAYS="junk")).discover_max_age_days == 14.0
+
+
 def test_invalid_overlay_account_rejected():
     with pytest.raises(ConfigError):
         load_config(base_env(OVERLAY_ACCOUNT="@bad:handle"))
