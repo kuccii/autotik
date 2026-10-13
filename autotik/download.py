@@ -14,6 +14,7 @@ ALLOWED_HOST_SUFFIXES = (
     "tiktokv.com",
     "tiktokv.us",
     "tikwm.com",
+    "akamaized.net",
     "cdn.test",
 )
 UA = (
