@@ -151,10 +151,45 @@ def test_publish_purges_backlog_below_likes_floor(tmp_path):
     assert db.get(conn.cursor(), "v1")["status"] == "skipped"
     events = [
         r["event"] for r in conn.execute(
-            "SELECT event FROM post_log WHERE event='below_min_likes'"
+            "SELECT event FROM post_log WHERE event='below_floor'"
         )
     ]
     assert len(events) == 2
+
+
+def test_publish_purges_rows_older_than_age_floor(tmp_path):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    old_ct = int(datetime.now(timezone.utc).timestamp()) - 45 * 86400
+    fresh_ct = int(datetime.now(timezone.utc).timestamp()) - 3 * 86400
+    cur.execute(
+        "UPDATE videos SET digg_count=2000000, create_time=? WHERE video_id='v2'",
+        (old_ct,),
+    )
+    cur.execute(
+        "UPDATE videos SET digg_count=2000000, create_time=? WHERE video_id='v3'",
+        (fresh_ct,),
+    )
+    conn.commit()
+    calls = []
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3", DISCOVER_MIN_LIKES="1000000", DISCOVER_MAX_AGE_DAYS="30"),
+        conn, auto=True,
+        uploader=lambda path, caption, account: calls.append(str(path)),
+        client=no_net(),
+    )
+    assert out["posted"] == 1
+    assert db.get(conn.cursor(), "v3")["status"] == "posted"
+    assert db.get(conn.cursor(), "v2")["status"] == "skipped"
+    # v1 has no create_time (NULL) -> only the likes floor applies; it is
+    # below it, so it is skipped too
+    assert db.get(conn.cursor(), "v1")["status"] == "skipped"
+    reasons = [
+        r["detail"] for r in conn.execute(
+            "SELECT detail FROM post_log WHERE event='below_floor'"
+        )
+    ]
+    assert any("exceeds DISCOVER_MAX_AGE_DAYS" in d for d in reasons)
 
 
 def test_cap_accounts_for_already_posted_today(tmp_path):

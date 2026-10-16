@@ -97,6 +97,27 @@ def test_approve_explicit_id_below_likes_floor_exits_2(tmp_path, monkeypatch, ca
     assert db.get(conn.cursor(), "small")["status"] == "skipped"
 
 
+def test_approve_all_demotes_rows_older_than_age_floor(tmp_path, monkeypatch):
+    import time as _time
+    env(monkeypatch, DATA_DIR=str(tmp_path), DISCOVER_MIN_LIKES="1000000",
+        DISCOVER_MAX_AGE_DAYS="30")
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    old_ct = int(_time.time()) - 60 * 86400
+    fresh_ct = int(_time.time()) - 2 * 86400
+    db.insert_candidates(conn.cursor(), [
+        {"video_id": "stale", "desc_orig": "d", "digg_count": 2_000_000,
+         "create_time": old_ct},
+        {"video_id": "fresh", "desc_orig": "d", "digg_count": 2_000_000,
+         "create_time": fresh_ct},
+    ])
+    conn.commit()
+    conn.close()
+    assert cli.main(["approve", "--all"]) == 0
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    assert db.get(conn.cursor(), "fresh")["status"] == "approved"
+    assert db.get(conn.cursor(), "stale")["status"] == "skipped"
+
+
 def test_status_is_exit_0(tmp_path, monkeypatch):
     env(monkeypatch, DATA_DIR=str(tmp_path))
     assert cli.main(["status"]) == 0

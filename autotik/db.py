@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS videos (
   file_path   TEXT,
   file_hash   TEXT,
   source_url  TEXT,
+  create_time INTEGER,
   status      TEXT NOT NULL DEFAULT 'staged',
   error       TEXT,
   created_at  TEXT NOT NULL,
@@ -62,6 +63,9 @@ def connect(path):
 def init_db(path):
     conn = connect(path)
     conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(videos)")}
+    if "create_time" not in cols:
+        conn.execute("ALTER TABLE videos ADD COLUMN create_time INTEGER")
     conn.commit()
     return conn
 
@@ -95,15 +99,15 @@ def insert_candidates(cur, rows):
             """INSERT OR IGNORE INTO videos
                (video_id, author, region, desc_orig, digg_count, play_count,
                 share_count, score, file_path, file_hash, source_url,
-                status, error, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                create_time, status, error, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 video_id, r.get("author"), r.get("region"),
                 r.get("desc_orig"), r.get("digg_count", 0),
                 r.get("play_count", 0), r.get("share_count", 0),
                 r.get("score", 0.0), r.get("file_path"),
-                digest, r.get("source_url"), status,
-                r.get("error"), _now(),
+                digest, r.get("source_url"), r.get("create_time"),
+                status, r.get("error"), _now(),
             ),
         )
         new += cur.rowcount

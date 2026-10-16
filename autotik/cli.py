@@ -138,12 +138,10 @@ def cmd_approve(cfg, conn, args):
         approved = 0
         demoted = 0
         for row in rows:
-            if cfg.discover_min_likes and (row["digg_count"] or 0) < cfg.discover_min_likes:
-                db.set_status(cur, row["video_id"], "skipped", "below DISCOVER_MIN_LIKES")
-                db.log(
-                    cur, row["video_id"], "below_min_likes",
-                    f"{row['digg_count']} < {cfg.discover_min_likes}",
-                )
+            reason = publish.below_floor_reason(cfg, row)
+            if reason:
+                db.set_status(cur, row["video_id"], "skipped", reason)
+                db.log(cur, row["video_id"], "below_floor", reason)
                 demoted += 1
             else:
                 db.set_status(cur, row["video_id"], "approved")
@@ -151,7 +149,7 @@ def cmd_approve(cfg, conn, args):
         conn.commit()
         msg = f"approved {approved}"
         if demoted:
-            msg += f", skipped {demoted} below {cfg.discover_min_likes} likes"
+            msg += f", skipped {demoted} below likes/age floor"
         print(msg)
         return 0
     if not args.video_ids:
@@ -167,21 +165,19 @@ def cmd_approve(cfg, conn, args):
         if row["status"] != "staged":
             print(f"{vid} is not staged", file=sys.stderr)
             return 2
-        if cfg.discover_min_likes and (row["digg_count"] or 0) < cfg.discover_min_likes:
-            db.set_status(cur, vid, "skipped", "below DISCOVER_MIN_LIKES")
-            db.log(
-                cur, vid, "below_min_likes",
-                f"{row['digg_count']} < {cfg.discover_min_likes}",
-            )
+        reason = publish.below_floor_reason(cfg, row)
+        if reason:
+            db.set_status(cur, vid, "skipped", reason)
+            db.log(cur, vid, "below_floor", reason)
             demoted += 1
         else:
             db.set_status(cur, vid, "approved")
             approved += 1
     conn.commit()
     if demoted and not approved:
-        print(f"skipped {demoted} below {cfg.discover_min_likes} likes", file=sys.stderr)
+        print(f"skipped {demoted} below likes/age floor", file=sys.stderr)
         return 2
-    print(f"approved {approved}" + (f", skipped {demoted} below likes floor" if demoted else ""))
+    print(f"approved {approved}" + (f", skipped {demoted} below floor" if demoted else ""))
     return 0
 
 

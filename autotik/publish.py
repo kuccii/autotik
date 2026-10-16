@@ -527,6 +527,22 @@ def session_check(cfg):
             context.close()
 
 
+def below_floor_reason(cfg, row, now=None):
+    """Return a skip reason if the row violates the likes or age floors,
+    else None. Enforced at approve AND publish time so pre-filter backlog
+    rows can never drain out of the queue."""
+    if cfg.discover_min_likes > 0 and (row["digg_count"] or 0) < cfg.discover_min_likes:
+        return f"below DISCOVER_MIN_LIKES: {row['digg_count']}"
+    ct = row["create_time"]
+    if cfg.discover_max_age_days > 0 and ct:
+        if now is None:
+            now = time.time()
+        age = (now - ct) / 86400.0
+        if age > cfg.discover_max_age_days:
+            return f"age {age:.1f}d exceeds DISCOVER_MAX_AGE_DAYS {cfg.discover_max_age_days:g}d"
+    return None
+
+
 def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     cur = conn.cursor()
@@ -553,24 +569,21 @@ def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
         }
 
     approved = db.rows_with_status(cur, "approved")
-    # enforce the discovery likes floor at publish time too: rows staged before
-    # DISCOVER_MIN_LIKES existed must not drain out of the approved backlog
+    # enforce the discovery likes/age floors at publish time too: rows staged
+    # before DISCOVER_MIN_LIKES existed must not drain out of the backlog
     purged_below = 0
-    if cfg.discover_min_likes > 0:
-        keep = []
-        for r in approved:
-            if (r["digg_count"] or 0) < cfg.discover_min_likes:
-                db.set_status(cur, r["video_id"], "skipped", "below DISCOVER_MIN_LIKES")
-                db.log(
-                    cur, r["video_id"], "below_min_likes",
-                    f"{r['digg_count']} < {cfg.discover_min_likes}",
-                )
-                purged_below += 1
-            else:
-                keep.append(r)
-        if purged_below:
-            conn.commit()
-            approved = keep
+    keep = []
+    for r in approved:
+        reason = below_floor_reason(cfg, r)
+        if reason:
+            db.set_status(cur, r["video_id"], "skipped", reason)
+            db.log(cur, r["video_id"], "below_floor", reason)
+            purged_below += 1
+        else:
+            keep.append(r)
+    if purged_below:
+        conn.commit()
+        approved = keep
     candidates = [r for r in approved if r["file_path"]]
     missing = [r for r in approved if not r["file_path"]]
     # drop rows that cannot produce a caption before they can consume a slot
