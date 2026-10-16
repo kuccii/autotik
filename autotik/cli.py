@@ -135,24 +135,53 @@ def cmd_approve(cfg, conn, args):
         if not rows:
             print("nothing staged")
             return 0
+        approved = 0
+        demoted = 0
         for row in rows:
-            db.set_status(cur, row["video_id"], "approved")
+            if cfg.discover_min_likes and (row["digg_count"] or 0) < cfg.discover_min_likes:
+                db.set_status(cur, row["video_id"], "skipped", "below DISCOVER_MIN_LIKES")
+                db.log(
+                    cur, row["video_id"], "below_min_likes",
+                    f"{row['digg_count']} < {cfg.discover_min_likes}",
+                )
+                demoted += 1
+            else:
+                db.set_status(cur, row["video_id"], "approved")
+                approved += 1
         conn.commit()
-        print(f"approved {len(rows)}")
+        msg = f"approved {approved}"
+        if demoted:
+            msg += f", skipped {demoted} below {cfg.discover_min_likes} likes"
+        print(msg)
         return 0
     if not args.video_ids:
         print("provide video ids or --all", file=sys.stderr)
         return 2
+    approved = 0
+    demoted = 0
     for vid in args.video_ids:
-        if db.get(cur, vid) is None:
+        row = db.get(cur, vid)
+        if row is None:
             print(f"unknown video_id: {vid}", file=sys.stderr)
             return 2
-        if db.get(cur, vid)["status"] != "staged":
+        if row["status"] != "staged":
             print(f"{vid} is not staged", file=sys.stderr)
             return 2
-        db.set_status(cur, vid, "approved")
+        if cfg.discover_min_likes and (row["digg_count"] or 0) < cfg.discover_min_likes:
+            db.set_status(cur, vid, "skipped", "below DISCOVER_MIN_LIKES")
+            db.log(
+                cur, vid, "below_min_likes",
+                f"{row['digg_count']} < {cfg.discover_min_likes}",
+            )
+            demoted += 1
+        else:
+            db.set_status(cur, vid, "approved")
+            approved += 1
     conn.commit()
-    print(f"approved {len(args.video_ids)}")
+    if demoted and not approved:
+        print(f"skipped {demoted} below {cfg.discover_min_likes} likes", file=sys.stderr)
+        return 2
+    print(f"approved {approved}" + (f", skipped {demoted} below likes floor" if demoted else ""))
     return 0
 
 

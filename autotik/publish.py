@@ -553,6 +553,24 @@ def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
         }
 
     approved = db.rows_with_status(cur, "approved")
+    # enforce the discovery likes floor at publish time too: rows staged before
+    # DISCOVER_MIN_LIKES existed must not drain out of the approved backlog
+    purged_below = 0
+    if cfg.discover_min_likes > 0:
+        keep = []
+        for r in approved:
+            if (r["digg_count"] or 0) < cfg.discover_min_likes:
+                db.set_status(cur, r["video_id"], "skipped", "below DISCOVER_MIN_LIKES")
+                db.log(
+                    cur, r["video_id"], "below_min_likes",
+                    f"{r['digg_count']} < {cfg.discover_min_likes}",
+                )
+                purged_below += 1
+            else:
+                keep.append(r)
+        if purged_below:
+            conn.commit()
+            approved = keep
     candidates = [r for r in approved if r["file_path"]]
     missing = [r for r in approved if not r["file_path"]]
     # drop rows that cannot produce a caption before they can consume a slot
@@ -568,7 +586,7 @@ def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
     fresh = [r for r in candidates if r["author"] not in recent_authors]
     candidates = fresh or candidates
 
-    result = {"posted": 0, "failed": 0, "skipped": len(missing), "not_due": False, "reason": None}
+    result = {"posted": 0, "failed": 0, "skipped": len(missing) + purged_below, "not_due": False, "reason": None}
     for row in missing:
         db.set_status(cur, row["video_id"], "failed", "no file_path recorded")
         alert.send(cfg.n8n_webhook_url, "warn", f"missing file for {row['video_id']}")

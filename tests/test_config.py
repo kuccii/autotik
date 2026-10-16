@@ -62,6 +62,13 @@ def test_discover_max_age_days_default_and_override():
     assert load_config(base_env(DISCOVER_MAX_AGE_DAYS="junk")).discover_max_age_days == 14.0
 
 
+def test_discover_min_likes_default_and_override():
+    assert load_config(base_env()).discover_min_likes == 1_000_000
+    assert load_config(base_env(DISCOVER_MIN_LIKES="500000")).discover_min_likes == 500_000
+    assert load_config(base_env(DISCOVER_MIN_LIKES="junk")).discover_min_likes == 1_000_000
+    assert load_config(base_env(DISCOVER_MIN_LIKES="-5")).discover_min_likes == 0
+
+
 def test_invalid_overlay_account_rejected():
     with pytest.raises(ConfigError):
         load_config(base_env(OVERLAY_ACCOUNT="@bad:handle"))

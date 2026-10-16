@@ -35,7 +35,7 @@ def cfg(**over):
     env = {
         "REGION": "RW", "TIKTOK_ACCOUNT": "@demo",
         "OPENROUTER_API_KEY": "sk-test", "N8N_WEBHOOK_URL": "",
-        "STAGE_ONLY": "false",
+        "STAGE_ONLY": "false", "DISCOVER_MIN_LIKES": "0",
     }
     env.update(over)
     return load_config(env)
@@ -128,6 +128,33 @@ def test_auto_posts_until_daily_cap(tmp_path):
     assert len(calls) == 1
     assert db.counts(conn.cursor())["posted"] == 1
     assert db.counts(conn.cursor())["approved"] == 2
+
+
+def test_publish_purges_backlog_below_likes_floor(tmp_path):
+    conn = make_conn(tmp_path)
+    cur = conn.cursor()
+    cur.execute("UPDATE videos SET digg_count=2000000 WHERE video_id='v2'")
+    conn.commit()
+    calls = []
+    out = publish.publish_batch(
+        cfg(POSTS_PER_DAY="3", DISCOVER_MIN_LIKES="1000000"), conn, auto=True,
+        uploader=lambda path, caption, account: calls.append(str(path)),
+        client=no_net(),
+    )
+    assert out["posted"] == 1
+    assert out["skipped"] == 2
+    counts = db.counts(conn.cursor())
+    assert counts["posted"] == 1
+    assert counts["skipped"] == 2
+    assert counts["approved"] == 0
+    assert db.get(conn.cursor(), "v2")["status"] == "posted"
+    assert db.get(conn.cursor(), "v1")["status"] == "skipped"
+    events = [
+        r["event"] for r in conn.execute(
+            "SELECT event FROM post_log WHERE event='below_min_likes'"
+        )
+    ]
+    assert len(events) == 2
 
 
 def test_cap_accounts_for_already_posted_today(tmp_path):

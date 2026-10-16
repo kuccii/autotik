@@ -6,7 +6,7 @@ STATUSES = frozenset({"staged", "approved", "posted", "failed", "skipped"})
 
 VALID = {
     "staged": frozenset({"approved", "failed", "skipped"}),
-    "approved": frozenset({"posted", "failed"}),
+    "approved": frozenset({"posted", "failed", "skipped"}),
     "posted": frozenset(),
     "failed": frozenset({"staged"}),
     "skipped": frozenset(),

@@ -69,6 +69,34 @@ def test_approve_all_transitions_rows(tmp_path, monkeypatch):
     assert db.counts(conn.cursor())["approved"] == 1
 
 
+def test_approve_all_demotes_rows_below_likes_floor(tmp_path, monkeypatch):
+    env(monkeypatch, DATA_DIR=str(tmp_path), DISCOVER_MIN_LIKES="1000000")
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    db.insert_candidates(conn.cursor(), [
+        {"video_id": "viral", "desc_orig": "d", "digg_count": 2_000_000},
+        {"video_id": "small", "desc_orig": "d", "digg_count": 99_000},
+    ])
+    conn.commit()
+    conn.close()
+    assert cli.main(["approve", "--all"]) == 0
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    assert db.get(conn.cursor(), "viral")["status"] == "approved"
+    assert db.get(conn.cursor(), "small")["status"] == "skipped"
+
+
+def test_approve_explicit_id_below_likes_floor_exits_2(tmp_path, monkeypatch, capsys):
+    env(monkeypatch, DATA_DIR=str(tmp_path), DISCOVER_MIN_LIKES="1000000")
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    db.insert_candidates(conn.cursor(), [
+        {"video_id": "small", "desc_orig": "d", "digg_count": 5},
+    ])
+    conn.commit()
+    conn.close()
+    assert cli.main(["approve", "small"]) == 2
+    conn = db.init_db(tmp_path / "autotik.sqlite")
+    assert db.get(conn.cursor(), "small")["status"] == "skipped"
+
+
 def test_status_is_exit_0(tmp_path, monkeypatch):
     env(monkeypatch, DATA_DIR=str(tmp_path))
     assert cli.main(["status"]) == 0
