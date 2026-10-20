@@ -35,6 +35,7 @@ class Config:
     overlay_enabled: bool
     overlay_account: str
     overlay_style: str
+    transform_variant_ratio: float
 
 
 def _flag(raw, default):
@@ -121,4 +122,7 @@ def load_config(env=None) -> Config:
         overlay_enabled=_flag(env.get("OVERLAY_ENABLED"), True),
         overlay_account=overlay_account,
         overlay_style=env.get("OVERLAY_STYLE", "bar").strip().lower(),
+        transform_variant_ratio=min(
+            1.0, max(0.0, _float(env.get("TRANSFORM_VARIANT_RATIO"), 0.0))
+        ),
     )

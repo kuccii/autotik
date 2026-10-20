@@ -58,7 +58,9 @@ def test_square_input_letterboxes_to_9x16():
 
 
 def fake_probe(path):
-    return {"width": 1080, "height": 1920, "duration": 2.0}
+    return {
+        "width": 1080, "height": 1920, "duration": 2.0, "has_audio": True,
+    }
 
 
 def test_transform_builds_expected_ffmpeg_command(tmp_path, monkeypatch):
@@ -71,6 +73,7 @@ def test_transform_builds_expected_ffmpeg_command(tmp_path, monkeypatch):
     cmd = RUNNERS["cmd"]
     assert cmd[0] == "ffmpeg"
     assert "-vf" in cmd
+    assert "0:v:0" in cmd
     assert "-c:a" in cmd and "copy" in cmd
     assert "+faststart" in cmd
     assert cmd[-1] == str(dst)
@@ -140,3 +143,72 @@ def test_real_ffmpeg_probe_and_transform(tmp_path, monkeypatch):
     wide_info = transform.probe(wide_out)
     assert (wide_info["width"], wide_info["height"]) == (out_w, out_h)
     assert wide_info["height"] > wide_info["width"]
+
+
+def test_heavy_variant_adds_crop_flip_and_speed():
+    vf, w, h = transform.build_filters(1080, 1920, "@demo", "bar", "heavy")
+    assert (w, h) == (1080, 1920)
+    assert "hflip" in vf
+    assert "setpts=PTS/1.05" in vf
+    assert "crop=" in vf
+    assert "eq=contrast" in vf
+
+
+def test_control_variant_has_no_picture_edits():
+    vf, _, _ = transform.build_filters(1080, 1920, "@demo", "bar", "control")
+    assert "hflip" not in vf
+    assert "setpts" not in vf
+
+
+def test_heavy_variant_letterbox_keeps_single_output():
+    vf, w, h = transform.build_filters(1920, 1080, "@demo", "bar", "heavy")
+    assert (w, h) == (1080, 1920)
+    assert vf.count("[vout]") == 1
+    assert "hflip" in vf
+
+
+def test_heavy_variant_reencodes_audio_with_tempo(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        transform, "probe",
+        lambda p: {"width": 1080, "height": 1920, "duration": 2.0,
+                   "has_audio": True},
+    )
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"in")
+    transform.transform(
+        src, tmp_path / "out.mp4", "@demo", variant="heavy",
+        runner=capture_runner(),
+    )
+    cmd = RUNNERS["cmd"]
+    assert "atempo=1.05" in cmd
+    assert "aac" in cmd
+    assert "copy" not in cmd
+
+
+def test_heavy_variant_skips_audio_filter_without_audio(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        transform, "probe",
+        lambda p: {"width": 1080, "height": 1920, "duration": 2.0,
+                   "has_audio": False},
+    )
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"in")
+    transform.transform(
+        src, tmp_path / "out.mp4", "@demo", variant="heavy",
+        runner=capture_runner(),
+    )
+    cmd = RUNNERS["cmd"]
+    assert "atempo=1.05" not in cmd
+    assert "-an" in cmd
+
+
+def test_pick_variant_is_deterministic_and_respects_bounds():
+    assert transform.pick_variant("123", 0.0) == "control"
+    assert transform.pick_variant("123", 1.0) == "heavy"
+    first = transform.pick_variant("7690495050308013332", 0.17)
+    assert first == transform.pick_variant("7690495050308013332", 0.17)
+    heavy = [
+        v for v in range(400)
+        if transform.pick_variant(f"v{v}", 0.17) == "heavy"
+    ]
+    assert 40 <= len(heavy) <= 110

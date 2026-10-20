@@ -251,3 +251,44 @@ def summary(conn):
         "avg_full_watch_pct": round(sum(full) / len(full), 2) if full else None,
         "latest": rows,
     }
+
+
+def variant_report(conn):
+    """Restriction rate and reach per transform variant.
+
+    Uses the newest snapshot per posted video so repeated syncs do not
+    double count.
+    """
+    cur = conn.cursor()
+    rows = cur.execute(
+        "SELECT v.transform_variant AS variant, "
+        "       COUNT(*) AS videos, "
+        "       SUM(CASE WHEN s.restricted = 1 THEN 1 ELSE 0 END) AS restricted, "
+        "       AVG(s.views) AS avg_views, "
+        "       AVG(s.avg_watch_s) AS avg_watch_s, "
+        "       AVG(s.full_watch_pct) AS avg_full_watch_pct "
+        "FROM videos v JOIN post_stats s ON s.video_id = v.video_id "
+        "WHERE v.status = 'posted' "
+        "  AND s.id = (SELECT MAX(id) FROM post_stats WHERE video_id = v.video_id) "
+        "GROUP BY v.transform_variant "
+        "ORDER BY v.transform_variant"
+    ).fetchall()
+    out = []
+    for row in rows:
+        videos = row["videos"] or 0
+        restricted = row["restricted"] or 0
+        out.append({
+            "variant": row["variant"],
+            "videos": videos,
+            "restricted": restricted,
+            "restricted_pct": round(100.0 * restricted / videos, 1) if videos else 0.0,
+            "avg_views": round(row["avg_views"], 1) if row["avg_views"] else None,
+            "avg_watch_s": (
+                round(row["avg_watch_s"], 2) if row["avg_watch_s"] else None
+            ),
+            "avg_full_watch_pct": (
+                round(row["avg_full_watch_pct"], 2)
+                if row["avg_full_watch_pct"] else None
+            ),
+        })
+    return out

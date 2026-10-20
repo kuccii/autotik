@@ -184,7 +184,7 @@ def test_duplicate_hash_mid_discovery_continues(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.download, "download", fake_download)
     monkeypatch.setattr(
         cli.transform, "transform",
-        lambda src, dst, account, enabled=True, style="bar": dst,
+        lambda src, dst, account, enabled=True, style="bar", variant="control": dst,
     )
     monkeypatch.setattr(cli.alert, "send", fake_send)
 
@@ -239,7 +239,7 @@ def test_discover_dedups_known_rows_before_ranking(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.download, "download", fake_download)
     monkeypatch.setattr(
         cli.transform, "transform",
-        lambda src, dst, account, enabled=True, style="bar": dst,
+        lambda src, dst, account, enabled=True, style="bar", variant="control": dst,
     )
     _spy = []
     monkeypatch.setattr(
@@ -277,7 +277,7 @@ def test_transform_failure_marks_failed_row_and_continues(tmp_path, monkeypatch)
     def fake_download(item, dest_dir, client):
         return tmp_path / f"{item['video_id']}.mp4", "h" + item["video_id"]
 
-    def fake_transform(src, dst, account, enabled=True, style="bar"):
+    def fake_transform(src, dst, account, enabled=True, style="bar", variant="control"):
         if Path(src).name == "v1.mp4":
             raise cli.transform.TransformError(
                 "ffmpeg exited 1: Conversion failed! frame=42 speed=1x"
@@ -339,7 +339,7 @@ def test_download_failures_send_single_summary_alert(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.download, "download", fake_download)
     monkeypatch.setattr(
         cli.transform, "transform",
-        lambda src, dst, account, enabled=True, style="bar": dst,
+        lambda src, dst, account, enabled=True, style="bar", variant="control": dst,
     )
     monkeypatch.setattr(cli.alert, "send", fake_send)
 
@@ -479,7 +479,7 @@ def test_run_discover_persists_desc_orig(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.download, "download", fake_download)
     monkeypatch.setattr(
         cli.transform, "transform",
-        lambda src, dst, account, enabled=True, style="bar": dst,
+        lambda src, dst, account, enabled=True, style="bar", variant="control": dst,
     )
     monkeypatch.setattr(cli.alert, "send", lambda *a, **k: False)
 
@@ -537,7 +537,7 @@ def test_duplicate_hash_on_failed_path_continues_discovery(tmp_path, monkeypatch
     def fake_download(item, dest_dir, client):
         return tmp_path / f"{item['video_id']}.mp4", hashes[item["video_id"]]
 
-    def fake_transform(src, dst, account, enabled=True, style="bar"):
+    def fake_transform(src, dst, account, enabled=True, style="bar", variant="control"):
         if Path(src).name == "v2.mp4":
             raise cli.transform.TransformError(
                 "ffmpeg exited 1: Conversion failed! frame=42 speed=1x"

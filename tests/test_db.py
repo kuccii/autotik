@@ -101,3 +101,38 @@ def test_last_log_returns_latest_entry(tmp_path):
 def test_last_log_on_empty_history_returns_none(tmp_path):
     conn = fresh(tmp_path)
     assert db.last_log(conn.cursor()) is None
+
+
+def test_insert_candidates_persists_transform_variant(tmp_path):
+    from autotik import db
+
+    conn = db.init_db(str(tmp_path / "a.sqlite"))
+    cur = conn.cursor()
+    db.insert_candidates(cur, [{
+        "video_id": "v1", "author": "a", "region": "RW", "desc_orig": "d",
+        "digg_count": 1_500_000, "file_path": "/x.mp4", "file_hash": "h1",
+        "transform_variant": "heavy",
+    }])
+    conn.commit()
+    assert db.get(cur, "v1")["transform_variant"] == "heavy"
+
+
+def test_init_db_adds_transform_variant_to_old_table(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    raw = sqlite3.connect(str(path))
+    raw.executescript(
+        "CREATE TABLE videos (video_id TEXT PRIMARY KEY, author TEXT, "
+        "region TEXT, desc_orig TEXT, caption TEXT, digg_count INTEGER, "
+        "play_count INTEGER, share_count INTEGER, score REAL, file_path TEXT, "
+        "file_hash TEXT, source_url TEXT, status TEXT, error TEXT, "
+        "created_at TEXT, posted_at TEXT);"
+    )
+    raw.commit()
+    raw.close()
+    from autotik import db
+
+    conn = db.init_db(str(path))
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(videos)")}
+    assert "transform_variant" in cols

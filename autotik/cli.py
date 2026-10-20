@@ -45,9 +45,13 @@ def run_discover(cfg, conn, limit=None):
                 failures.append(f"download {item['video_id']}: {exc}")
                 continue
             try:
+                variant = transform.pick_variant(
+                    item["video_id"], cfg.transform_variant_ratio
+                )
                 out = transform.transform(
                     path, path.with_name(f"{item['video_id']}_tf.mp4"),
                     cfg.overlay_account, cfg.overlay_enabled, cfg.overlay_style,
+                    variant,
                 )
             except transform.TransformError as exc:
                 failures.append(f"transform {item['video_id']}: {exc}")
@@ -82,6 +86,7 @@ def run_discover(cfg, conn, limit=None):
                             desc_orig=item["desc"],
                             file_path=str(out),
                             file_hash=digest,
+                            transform_variant=variant,
                         )
                     ],
                 )
@@ -259,6 +264,16 @@ def cmd_analytics(cfg, conn, args):
             f"  {row['video_id']} views={row['views']} "
             f"watch={row['avg_watch_s']}s full={row['full_watch_pct']}%{flag}"
         )
+    variants = analytics.variant_report(conn)
+    if variants:
+        print("variant            videos  restricted  avg_views  avg_watch  full%")
+        for v in variants:
+            print(
+                f"  {str(v['variant']):<16} {v['videos']:>6}  "
+                f"{v['restricted']:>4} ({v['restricted_pct']:>5}%)  "
+                f"{str(v['avg_views']):>9}  {str(v['avg_watch_s']):>9}  "
+                f"{str(v['avg_full_watch_pct']):>5}"
+            )
     return 0
 
 
