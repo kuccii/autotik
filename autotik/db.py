@@ -59,6 +59,16 @@ CREATE TABLE IF NOT EXISTS account_snapshots (
   followers INTEGER,
   captured_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS follows (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  source TEXT,
+  live_host TEXT,
+  result TEXT NOT NULL,
+  ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_follows_username ON follows(username, id);
+CREATE INDEX IF NOT EXISTS idx_follows_ts ON follows(ts);
 """
 
 
@@ -217,3 +227,29 @@ def last_log(cur):
     return cur.execute(
         "SELECT * FROM post_log ORDER BY id DESC LIMIT 1"
     ).fetchone()
+
+
+def follow_log_add(cur, username, source, live_host, result):
+    cur.execute(
+        "INSERT INTO follows (username, source, live_host, result, ts) "
+        "VALUES (?,?,?,?,?)",
+        (username, source, live_host, result, _now()),
+    )
+
+
+def followed_usernames(cur):
+    return {
+        row[0].lower()
+        for row in cur.execute(
+            "SELECT DISTINCT username FROM follows WHERE result IN "
+            "('followed','would','already')"
+        )
+    }
+
+
+def follows_since(cur, ts_iso):
+    return cur.execute(
+        "SELECT COUNT(*) FROM follows WHERE ts >= ? AND result IN "
+        "('followed','would')",
+        (ts_iso,),
+    ).fetchone()[0]

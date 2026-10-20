@@ -277,6 +277,37 @@ def cmd_analytics(cfg, conn, args):
     return 0
 
 
+def cmd_follow(cfg, conn, args):
+    from autotik import follow
+
+    dry_run = not args.commit
+    try:
+        result = follow.run(
+            cfg, conn,
+            max_follows=args.max,
+            dry_run=dry_run,
+            keywords=args.keywords.split(",") if args.keywords else None,
+            lives=args.lives,
+            log=print,
+        )
+    except Exception as exc:
+        alert.send(cfg.n8n_webhook_url, "error", f"autotik follow crashed: {exc}")
+        raise
+    mode = "DRY RUN" if dry_run else "live"
+    print(
+        f"follow [{mode}]: lives={result['lives']} collected={result['collected']} "
+        f"followed={result['followed']} already={result['already']} "
+        f"known={result['skipped_known']} errors={result['errors']} "
+        f"budget={result['budget']}"
+    )
+    if result["blocked"]:
+        alert.send(
+            cfg.n8n_webhook_url, "error",
+            "autotik: follow run stopped early â€” TikTok rate-limited or blocked",
+        )
+    return 0
+
+
 def cmd_status(cfg, conn, args):
     cur = conn.cursor()
     c = db.counts(cur)
@@ -324,6 +355,14 @@ def build_parser():
     )
     an.add_argument("--sync", action="store_true", help="scrape Studio first")
 
+    f = sub.add_parser(
+        "follow", help="join growth lives and follow commenters (dry run by default)"
+    )
+    f.add_argument("--commit", action="store_true", help="actually click Follow")
+    f.add_argument("--max", type=int, default=None, help="cap for this run")
+    f.add_argument("--lives", type=int, default=3, help="how many live rooms to join")
+    f.add_argument("--keywords", default=None, help="comma-separated search terms")
+
     sub.add_parser(
         "session-check",
         help="open the persistent profile, verify the session, keep it alive",
@@ -341,6 +380,7 @@ COMMANDS = {
     "session-check": cmd_session_check,
     "status": cmd_status,
     "analytics": cmd_analytics,
+    "follow": cmd_follow,
     "run-daily": cmd_run_daily,
 }
 

@@ -36,6 +36,10 @@ class Config:
     overlay_account: str
     overlay_style: str
     transform_variant_ratio: float
+    follow_daily_cap: int
+    follow_min_gap_s: float
+    follow_max_gap_s: float
+    follow_keywords: tuple[str, ...]
 
 
 def _flag(raw, default):
@@ -124,5 +128,20 @@ def load_config(env=None) -> Config:
         overlay_style=env.get("OVERLAY_STYLE", "bar").strip().lower(),
         transform_variant_ratio=min(
             1.0, max(0.0, _float(env.get("TRANSFORM_VARIANT_RATIO"), 0.0))
+        ),
+        follow_daily_cap=max(0, _int(env.get("FOLLOW_DAILY_CAP"), 60)),
+        follow_min_gap_s=max(3.0, _float(env.get("FOLLOW_MIN_GAP"), 20.0)),
+        follow_max_gap_s=max(
+            max(3.0, _float(env.get("FOLLOW_MIN_GAP"), 20.0)),
+            _float(env.get("FOLLOW_MAX_GAP"), 45.0),
+        ),
+        follow_keywords=tuple(
+            k.strip()
+            for k in env.get(
+                "FOLLOW_KEYWORDS",
+                "follow train,f4f,follow for follow,grow your account,"
+                "l4l,grow with me,engagement",
+            ).split(",")
+            if k.strip()
         ),
     )
