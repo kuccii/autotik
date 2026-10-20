@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 STATUSES = frozenset({"staged", "approved", "posted", "failed", "skipped"})
@@ -40,6 +40,23 @@ CREATE TABLE IF NOT EXISTS post_log (
   event TEXT NOT NULL,
   detail TEXT,
   ts TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_post_log_video ON post_log(video_id, id);
+CREATE TABLE IF NOT EXISTS post_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id TEXT NOT NULL,
+  views INTEGER,
+  avg_watch_s REAL,
+  full_watch_pct REAL,
+  new_followers INTEGER,
+  restricted INTEGER,
+  captured_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_post_stats_video ON post_stats(video_id, id);
+CREATE TABLE IF NOT EXISTS account_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  followers INTEGER,
+  captured_at TEXT NOT NULL
 );
 """
 
@@ -163,6 +180,32 @@ def log(cur, video_id, event, detail=""):
     cur.execute(
         "INSERT INTO post_log (video_id, event, detail, ts) VALUES (?,?,?,?)",
         (video_id, event, detail, _now()),
+    )
+
+
+def iso_days_ago(days):
+    return (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).isoformat(timespec="seconds")
+
+
+def add_post_stats(cur, video_id, views=None, avg_watch_s=None,
+                   full_watch_pct=None, new_followers=None, restricted=None):
+    cur.execute(
+        "INSERT INTO post_stats (video_id, views, avg_watch_s, full_watch_pct, "
+        "new_followers, restricted, captured_at) VALUES (?,?,?,?,?,?,?)",
+        (
+            video_id, views, avg_watch_s, full_watch_pct, new_followers,
+            1 if restricted else (0 if restricted is not None else None),
+            _now(),
+        ),
+    )
+
+
+def add_account_snapshot(cur, followers):
+    cur.execute(
+        "INSERT INTO account_snapshots (followers, captured_at) VALUES (?,?)",
+        (followers, _now()),
     )
 
 

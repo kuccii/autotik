@@ -220,6 +220,48 @@ def cmd_session_check(cfg, conn, args):
     return 0
 
 
+def cmd_analytics(cfg, conn, args):
+    from autotik import analytics
+
+    if args.sync:
+        try:
+            result = analytics.sync(cfg, conn)
+        except publish.PublishError as exc:
+            print(f"analytics sync failed: {exc}", file=sys.stderr)
+            alert.send(
+                cfg.n8n_webhook_url, "error", f"analytics sync failed: {exc}"
+            )
+            return 1
+        print(
+            f"synced {result['checked']} videos, followers={result['followers']}, "
+            f"restricted={result['restricted']}, views={result['views']}"
+        )
+        if result["checked"] and result["restricted"] * 2 >= result["checked"]:
+            alert.send(
+                cfg.n8n_webhook_url,
+                "warn",
+                f"autotik: {result['restricted']}/{result['checked']} sampled videos "
+                "are NOT eligible for the For You feed (unoriginal-content flag)",
+            )
+    summary = analytics.summary(conn)
+    if summary["videos"] == 0:
+        print("no analytics snapshots yet (run: autotik analytics --sync)")
+        return 0
+    print(
+        f"followers={summary['followers']} videos={summary['videos']} "
+        f"views={summary['views']} restricted={summary['restricted']} "
+        f"avg_watch_s={summary['avg_watch_s']} "
+        f"full_watch%={summary['avg_full_watch_pct']}"
+    )
+    for row in summary["latest"][:12]:
+        flag = " RESTRICTED" if row["restricted"] else ""
+        print(
+            f"  {row['video_id']} views={row['views']} "
+            f"watch={row['avg_watch_s']}s full={row['full_watch_pct']}%{flag}"
+        )
+    return 0
+
+
 def cmd_status(cfg, conn, args):
     cur = conn.cursor()
     c = db.counts(cur)
@@ -262,6 +304,11 @@ def build_parser():
 
     sub.add_parser("status", help="counts and remaining budget")
 
+    an = sub.add_parser(
+        "analytics", help="print own Studio analytics (--sync to refresh)"
+    )
+    an.add_argument("--sync", action="store_true", help="scrape Studio first")
+
     sub.add_parser(
         "session-check",
         help="open the persistent profile, verify the session, keep it alive",
@@ -278,6 +325,7 @@ COMMANDS = {
     "publish": cmd_publish,
     "session-check": cmd_session_check,
     "status": cmd_status,
+    "analytics": cmd_analytics,
     "run-daily": cmd_run_daily,
 }
 
