@@ -294,6 +294,14 @@ def open_context(p, cookie_path, headless=True):
             )
             if not cookies:
                 raise ValueError(f"cookie file has no usable cookies: {cookie_path}")
+            # A re-export can scope the same cookie name to a different domain
+            # (e.g. ".www.tiktok.com" instead of ".tiktok.com"). Both would then
+            # be sent, and the stale one can shadow the fresh login -- clear
+            # first so the export is the single source of truth.
+            try:
+                ctx.clear_cookies()
+            except Exception:
+                pass
             ctx.add_cookies(cookies)
             mark_cookie_import(pdir, cookie_path)
     except Exception:

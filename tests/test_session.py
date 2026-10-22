@@ -165,3 +165,10 @@ def test_apply_client_hints_fallback_drops_form_factors():
     _method, payload = ctx.cdp.sent[0]
     assert "formFactors" not in payload["userAgentMetadata"]
     assert payload["userAgentMetadata"]["platform"] == "Windows"
+def test_import_clears_stale_cookies_before_adding():
+    import inspect
+
+    src = inspect.getsource(session.open_context)
+    clear = src.index("clear_cookies")
+    add = src.index("add_cookies(cookies)")
+    assert clear < add
