@@ -569,3 +569,62 @@ def test_defuse_handles_no_only_confirm_modals():
 
     src = inspect.getsource(publish._defuse_overlays)
     assert "button:text-is('No')" in src
+
+class _AcctPage:
+    """Minimal page double: evaluate() returns whatever the account API did."""
+
+    def __init__(self, data):
+        self.data = data
+        self.calls = []
+
+    def evaluate(self, js, arg=None):
+        self.calls.append(arg)
+        return self.data
+
+
+def test_account_identity_reads_username():
+    page = _AcctPage({"data": {"username": "shadowmorarch"}})
+    assert publish.account_identity(page) == "shadowmorarch"
+    assert page.calls[0].startswith(publish.ACCOUNT_INFO_URL)
+
+
+def test_account_identity_bypasses_http_cache():
+    import inspect
+
+    src = inspect.getsource(publish.account_identity)
+    assert "no-store" in src and "_ts=" in src
+
+
+def test_account_identity_falls_back_to_screen_name():
+    assert publish.account_identity(_AcctPage({"data": {"screen_name": "X"}})) == "X"
+
+
+def test_account_identity_none_when_logged_out():
+    assert publish.account_identity(_AcctPage({"data": {}})) is None
+    assert publish.account_identity(_AcctPage(None)) is None
+
+
+def test_assert_account_blocks_foreign_cookie():
+    page = _AcctPage({"data": {"username": "Patrick Hirwa"}})
+    with pytest.raises(publish.PublishError) as exc:
+        publish.assert_account(page, "shadowmorarch")
+    assert "Patrick Hirwa" in str(exc.value)
+    assert "shadowmorarch" in str(exc.value)
+
+
+def test_assert_account_allows_owner_ignoring_case_and_at():
+    publish.assert_account(_AcctPage({"data": {"username": "ShadowMorarch"}}), "@shadowmorarch")
+    publish.assert_account(_AcctPage({"data": {"username": "shadowmorarch"}}), "shadowmorarch")
+
+
+def test_assert_account_allows_when_identity_unknown():
+    # fail open only when TikTok tells us nothing, never on a mismatch
+    publish.assert_account(_AcctPage(None), "shadowmorarch")
+    publish.assert_account(_AcctPage({"data": {"username": "shadowmorarch"}}), "")
+
+
+def test_publish_checks_identity_before_staging():
+    import inspect
+
+    src = inspect.getsource(publish._run_tiktok_upload)
+    assert src.index("assert_account") < src.index("_content_snapshot")

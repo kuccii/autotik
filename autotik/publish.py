@@ -296,6 +296,56 @@ def _defuse_overlays(page, seconds=8):
         time.sleep(0.4)
 
 
+ACCOUNT_INFO_URL = "https://www.tiktok.com/passport/web/account/info/?aid=1988"
+
+
+def account_identity(page):
+    """Return the screen name the current session is logged in as, or None.
+
+    Read from TikTok's own account endpoint through the page (so the browser's
+    real cookie jar and TLS fingerprint are used) rather than trusting our own
+    parsing of the export."""
+    try:
+        data = page.evaluate(
+            """async (url) => {
+                const bust = url + "&_ts=" + Date.now();
+                const r = await fetch(bust, {credentials: "include", cache: "no-store"});
+                if (!r.ok) return null;
+                return await r.json();
+            }""",
+            ACCOUNT_INFO_URL,
+        )
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    info = data.get("data")
+    if not isinstance(info, dict):
+        return None
+    name = info.get("username") or info.get("screen_name")
+    if not name:
+        return None
+    return str(name).lstrip("@").strip() or None
+
+
+def assert_account(page, expected):
+    """Refuse to act when the loaded session belongs to another account.
+
+    A wrong cookie file would otherwise publish to (or scrape from) somebody
+    else's profile; that is unrecoverable, so this is a hard stop."""
+    expected = (expected or "").strip().lstrip("@")
+    if not expected:
+        return
+    actual = account_identity(page)
+    if actual is None:
+        return
+    if actual.lower() != expected.lower():
+        raise PublishError(
+            f"cookie belongs to @{actual}, expected @{expected}; "
+            "refusing to publish with the wrong account"
+        )
+
+
 def _content_snapshot(page, wait_ms=9000):
     if "/tiktokstudio/content" not in page.url:
         page.goto(CONTENT_URL, wait_until="domcontentloaded", timeout=60000)
@@ -334,6 +384,7 @@ def _run_tiktok_upload(video, caption, cookie_path, accountname):
     with sync_playwright() as p:
         context, page = session.open_context(p, cookie_path)
         try:
+            assert_account(page, accountname)
             baseline, ids_before, _ = _content_snapshot(page)
             if baseline is None:
                 raise PublishError(
@@ -507,6 +558,7 @@ def session_check(cfg):
     with sync_playwright() as p:
         context, page = session.open_context(p, str(cookie))
         try:
+            assert_account(page, cfg.account)
             posts, _ids, _text = _content_snapshot(page, wait_ms=4000)
             if posts is None:
                 raise PublishError(
