@@ -252,12 +252,51 @@ def _diag_caption_failure(page, shot, log, exc):
         log(f"page diag failed: {str(diag_exc)[:150]}")
 
 
+JOYRIDE_JS = """
+() => {
+  const sel = '.react-joyride__overlay, #react-joyride-portal, .react-joyride__tooltip';
+  const nodes = document.querySelectorAll(sel);
+  nodes.forEach(n => n.remove());
+  return nodes.length;
+}
+"""
+
+JOYRIDE_BUTTONS = (
+    'button:has-text("Got it")',
+    'button:has-text("Skip tour")',
+    'button:has-text("Skip")',
+    'button:has-text("Done")',
+    '[data-testid="button-close"]',
+)
+
+
+def _clear_joyride(page):
+    """Studio shows a product tour (react-joyride) that covers the caption
+    editor and never appears in the TUXModal checks. Close or delete it."""
+    removed = 0
+    for sel in JOYRIDE_BUTTONS:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0 and loc.is_visible():
+                loc.click(timeout=1200)
+                time.sleep(0.4)
+        except Exception:
+            pass
+    try:
+        removed = page.evaluate(JOYRIDE_JS) or 0
+    except Exception:
+        removed = 0
+    return removed
+
+
 def _defuse_overlays(page, seconds=8):
     """TikTok renders modals AFTER the file is processed on an unpredictable
     delay ('Turn on automatic content checks?', coach marks); close whatever
     overlays the page until none is visible or the deadline passes."""
+    _clear_joyride(page)
     deadline = time.time() + seconds
     while True:
+        _clear_joyride(page)
         try:
             overlay = page.locator(".TUXModal-overlay")
             open_count = sum(

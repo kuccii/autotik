@@ -628,3 +628,57 @@ def test_publish_checks_identity_before_staging():
 
     src = inspect.getsource(publish._run_tiktok_upload)
     assert src.index("assert_account") < src.index("_content_snapshot")
+
+class _OverlayLoc:
+    def __init__(self, page, sel):
+        self.page = page
+        self.sel = sel
+
+    def count(self):
+        return 0
+
+    @property
+    def first(self):
+        return self
+
+    def nth(self, i):
+        return self
+
+    def is_visible(self):
+        return False
+
+    def click(self, timeout=None):
+        self.page.clicked.append(self.sel)
+
+
+class _OverlayPage:
+    def __init__(self):
+        self.evaluated = []
+        self.clicked = []
+
+    def locator(self, sel):
+        return _OverlayLoc(self, sel)
+
+    def evaluate(self, js, arg=None):
+        self.evaluated.append(js)
+        return 1
+
+    def keyboard(self):
+        return self
+
+
+def test_clear_joyride_removes_studio_tour():
+    page = _OverlayPage()
+    assert publish._clear_joyride(page) == 1
+    assert "react-joyride" in page.evaluated[0]
+
+
+def test_defuse_overlays_clears_joyride_first():
+    page = _OverlayPage()
+    assert publish._defuse_overlays(page, seconds=0.1) is True
+    assert len(page.evaluated) >= 2
+
+
+def test_joyride_selectors_cover_tour_text():
+    text = " ".join(publish.JOYRIDE_BUTTONS).lower()
+    assert "got it" in text and "skip" in text
