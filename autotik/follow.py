@@ -22,6 +22,11 @@ BLOCK_MARKERS = (
     "fit the puzzle",
     "verify you're human",
     "security check",
+    # The account-status modal that actually appeared on 2026-10-20 after ~15
+    # profile views. It is the strongest stop signal TikTok can give and it was
+    # not matched by any marker above, so the run kept going.
+    "account may be at risk",
+    "account is at risk",
 )
 
 # Transient UI noise that must NOT be read as a block ("Something went wrong"

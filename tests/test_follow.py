@@ -140,6 +140,16 @@ def test_looks_blocked():
     assert not follow.looks_blocked("Follow")
 
 
+def test_account_risk_modal_stops_the_run():
+    # verbatim from the modal seen on 2026-10-20
+    modal = (
+        "Your account may be at risk. Please contact support or log in and "
+        "change your password."
+    )
+    assert follow.looks_blocked(modal)
+    assert not follow.looks_blocked("Follow back")
+
+
 def test_looks_logged_out():
     assert follow.looks_logged_out("Log in to TikTok\nThis creator turned on audience controls")
     assert follow.looks_logged_out("Log in to make the most of TikTok")
