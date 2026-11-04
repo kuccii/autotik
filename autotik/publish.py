@@ -299,6 +299,39 @@ def _defuse_overlays(page, seconds=8):
 ACCOUNT_INFO_URL = "https://www.tiktok.com/passport/web/account/info/?aid=1988"
 
 
+AUTH_ERROR_MARKERS = (
+    "login wall",
+    "session invalid",
+)
+
+
+def is_auth_error(exc):
+    text = str(exc).lower()
+    return any(marker in text for marker in AUTH_ERROR_MARKERS)
+
+
+def heal_session(cfg, log=print):
+    """Try one automatic re-login. Returns True when the session is usable."""
+    from autotik import login as login_mod
+
+    if not (getattr(cfg, "tiktok_email", "") and getattr(cfg, "tiktok_password", "")):
+        log("[heal] no credentials configured, cannot re-login")
+        return False
+    try:
+        ok = login_mod.login(cfg, log=log)
+    except Exception as exc:
+        log(f"[heal] re-login failed: {str(exc)[:200]}")
+        alert.send(
+            cfg.n8n_webhook_url, "error",
+            f"tiktok re-login failed: {str(exc)[:200]} "
+            "(run `autotik login --qr` and scan the code to recover)",
+        )
+        return False
+    if not ok:
+        log("[heal] re-login did not verify")
+    return bool(ok)
+
+
 def account_identity(page):
     """Return the screen name the current session is logged in as, or None.
 
@@ -544,9 +577,23 @@ def default_uploader(cfg):
 
 
 def session_check(cfg):
-    """Pre-flight + keep-alive: open the persistent profile, load the Studio
-    content page (raises PublishError on the login wall), dwell like a human
-    briefly, and confirm the session still reads the Posts count."""
+    """Pre-flight + keep-alive: confirm the stored session still reaches the
+    Studio content page, and re-login automatically when TikTok has revoked it.
+
+    The heal step runs outside the browser context on purpose: one profile can
+    only be driven by one Chromium instance at a time."""
+    try:
+        return _session_check_once(cfg)
+    except PublishError as exc:
+        if not is_auth_error(exc):
+            raise
+        print(f"[session] {exc}", flush=True)
+        if not heal_session(cfg):
+            raise
+        return _session_check_once(cfg)
+
+
+def _session_check_once(cfg):
     cookie = _stage_cookie(cfg, cfg.account)
     try:
         from phantomwright_driver.sync_api import sync_playwright
@@ -703,20 +750,30 @@ def publish_batch(cfg, conn, auto=False, uploader=None, client=None):
                 db.log(cur, vid, "caption_duplicate", caption[:120])
                 conn.commit()
                 continue
-            try:
-                ret = upload(path, caption, cfg.account)
-                if ret == "Error":
-                    raise PublishError(
-                        f"uploader returned {ret!r}: cannot confirm if "
-                        "uploaded successfully"
-                    )
-            except Exception as exc:
-                db.set_status(cur, vid, "failed", str(exc)[:500])
-                db.log(cur, vid, "upload_failed", str(exc)[:500])
+            ok = False
+            last_exc = None
+            for attempt in (1, 2):
+                try:
+                    ret = upload(path, caption, cfg.account)
+                    if ret == "Error":
+                        raise PublishError(
+                            f"uploader returned {ret!r}: cannot confirm if "
+                            "uploaded successfully"
+                        )
+                    ok = True
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    if attempt == 1 and is_auth_error(exc) and heal_session(cfg):
+                        continue
+                    break
+            if not ok:
+                db.set_status(cur, vid, "failed", str(last_exc)[:500])
+                db.log(cur, vid, "upload_failed", str(last_exc)[:500])
                 result["failed"] += 1
                 alert.send(
                     cfg.n8n_webhook_url, "error",
-                    f"upload failed for {vid}: {exc}",
+                    f"upload failed for {vid}: {last_exc}",
                 )
                 conn.commit()
                 break

@@ -40,6 +40,8 @@ class Config:
     follow_min_gap_s: float
     follow_max_gap_s: float
     follow_keywords: tuple[str, ...]
+    tiktok_email: str = ""
+    tiktok_password: str = ""
 
 
 def _flag(raw, default):
@@ -115,6 +117,8 @@ def load_config(env=None) -> Config:
         n8n_webhook_url=env.get("N8N_WEBHOOK_URL", "").strip(),
         data_dir=env.get("DATA_DIR", "data"),
         cookie_dir=env.get("COOKIE_DIR", "cookies"),
+        tiktok_email=env.get("TIKTOK_EMAIL", "").strip(),
+        tiktok_password=env.get("TIKTOK_PASSWORD", ""),
         discover_fetch=max(1, _int(env.get("DISCOVER_FETCH"), 20)),
         discover_keep=max(1, _int(env.get("DISCOVER_KEEP"), 6)),
         discover_max_age_days=_float(env.get("DISCOVER_MAX_AGE_DAYS"), 14.0),

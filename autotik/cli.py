@@ -211,6 +211,30 @@ def cmd_publish(cfg, conn, args):
     return 0
 
 
+def cmd_login(cfg, conn, args):
+    from autotik import login as login_mod
+
+    try:
+        if getattr(args, "qr", False):
+            ok = login_mod.qr_login(
+                cfg, log=print, timeout_s=getattr(args, "timeout", 240)
+            )
+        else:
+            ok = login_mod.login(cfg, log=print)
+    except Exception as exc:
+        print(f"login FAILED: {exc}", file=sys.stderr)
+        alert.send(
+            cfg.n8n_webhook_url, "error",
+            f"tiktok login failed: {str(exc)[:200]}",
+        )
+        return 1
+    if not ok:
+        print("login did not verify", file=sys.stderr)
+        return 1
+    print("login ok")
+    return 0
+
+
 def cmd_session_check(cfg, conn, args):
     try:
         result = publish.session_check(cfg)
@@ -350,6 +374,12 @@ def build_parser():
 
     sub.add_parser("status", help="counts and remaining budget")
 
+    lg = sub.add_parser(
+        "login", help="log in with TIKTOK_EMAIL/TIKTOK_PASSWORD and verify"
+    )
+    lg.add_argument("--qr", action="store_true", help="scan-to-log-in QR instead")
+    lg.add_argument("--timeout", type=int, default=240, help="QR wait seconds")
+
     an = sub.add_parser(
         "analytics", help="print own Studio analytics (--sync to refresh)"
     )
@@ -378,6 +408,7 @@ COMMANDS = {
     "approve": cmd_approve,
     "publish": cmd_publish,
     "session-check": cmd_session_check,
+    "login": cmd_login,
     "status": cmd_status,
     "analytics": cmd_analytics,
     "follow": cmd_follow,
