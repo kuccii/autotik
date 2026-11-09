@@ -105,6 +105,8 @@ def _cfg(**over):
         discover_regions=("RW",),
         discover_max_age_days=30,
         discover_min_likes=0,
+        discover_keywords=(),
+        discover_max_duration_s=90,
         posts_per_day=1,
         max_posts_per_day=1,
         publish_slots=("08:00",),

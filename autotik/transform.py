@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 TRANSFORM_MIN_BYTES = 20_000
+ENCODE_TIMEOUT_S = 300
 FONT_FILE = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 TARGET_W, TARGET_H = 1080, 1920
 ASPECT_TOLERANCE = 0.02
@@ -162,9 +163,17 @@ def transform(
         cmd += ["-c:a", "copy"]
     cmd += ["-movflags", "+faststart", str(dst)]
     try:
-        result = runner(cmd, capture_output=True, text=True)
+        result = runner(cmd, capture_output=True, text=True, timeout=ENCODE_TIMEOUT_S)
     except FileNotFoundError as exc:
         raise TransformError("ffmpeg not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        # A pathological source (long or unusual resolution) can keep ffmpeg
+        # busy for an hour and starve every other job on the box.
+        if dst.exists():
+            dst.unlink()
+        raise TransformError(
+            f"ffmpeg exceeded {ENCODE_TIMEOUT_S}s; source likely too long"
+        ) from exc
 
     if result.returncode != 0:
         if dst.exists():

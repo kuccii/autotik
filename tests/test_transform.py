@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,20 @@ def returncode_runner(code, stderr):
         r.stderr = stderr
         return r
     return runner
+
+
+def test_transform_aborts_when_ffmpeg_exceeds_the_timeout(tmp_path, monkeypatch):
+    """A long source once held one encode for over an hour and wedged the box."""
+    monkeypatch.setattr(transform, "probe", fake_probe)
+    src = tmp_path / "in.mp4"
+    src.write_bytes(b"in")
+
+    def slow_runner(cmd, **kwargs):
+        assert kwargs.get("timeout") == transform.ENCODE_TIMEOUT_S
+        raise subprocess.TimeoutExpired(cmd, kwargs["timeout"])
+
+    with pytest.raises(transform.TransformError, match="exceeded"):
+        transform.transform(src, tmp_path / "o.mp4", "@demo", runner=slow_runner)
 
 
 def test_disabled_transform_returns_source_path(tmp_path):

@@ -29,7 +29,16 @@ def run_discover(cfg, conn, limit=None):
         feed = discover.fetch_feed(client, cfg.discover_regions, fetch)
         items = discover.parse_items(feed)
         items = discover.filter_by_age(items, now, cfg.discover_max_age_days)
+        items = discover.filter_by_duration(items, cfg.discover_max_duration_s)
         items = discover.filter_by_likes(items, cfg.discover_min_likes)
+        before_niche = len(items)
+        items = discover.filter_by_keywords(items, cfg.discover_keywords)
+        if cfg.discover_keywords and items:
+            print(
+                f"niche filter: {len(items)}/{before_niche} keep "
+                f"({'/'.join(cfg.discover_keywords)})",
+                flush=True,
+            )
         items = [i for i in items if db.get(cur, i["video_id"]) is None]
         items = discover.rank(items, keep, now)
         if not items:

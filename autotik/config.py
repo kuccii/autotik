@@ -28,6 +28,8 @@ class Config:
     discover_regions: tuple[str, ...]
     discover_max_age_days: float
     discover_min_likes: int
+    discover_keywords: tuple[str, ...]
+    discover_max_duration_s: float
     posts_per_day: int
     max_posts_per_day: int
     publish_slots: tuple[str, ...]
@@ -123,6 +125,14 @@ def load_config(env=None) -> Config:
         discover_keep=max(1, _int(env.get("DISCOVER_KEEP"), 6)),
         discover_max_age_days=_float(env.get("DISCOVER_MAX_AGE_DAYS"), 14.0),
         discover_min_likes=max(0, _int(env.get("DISCOVER_MIN_LIKES"), 1_000_000)),
+        discover_keywords=tuple(
+            k.strip()
+            for k in env.get("DISCOVER_KEYWORDS", "").split(",")
+            if k.strip()
+        ),
+        discover_max_duration_s=max(
+            0.0, _float(env.get("DISCOVER_MAX_DURATION_S"), 90.0)
+        ),
         posts_per_day=posts,
         max_posts_per_day=max_posts,
         publish_slots=slots,

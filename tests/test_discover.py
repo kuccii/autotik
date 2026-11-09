@@ -140,6 +140,49 @@ def test_filter_by_likes_disabled_when_zero():
     assert discover.filter_by_likes(items, 0) == items
 
 
+def test_filter_by_keywords_keeps_only_the_niche():
+    items = [
+        {"video_id": "a", "desc": "this prank on my brother is so funny"},
+        {"video_id": "b", "desc": "best goals from the weekend"},
+        {"video_id": "c", "desc": "extrait du film culte"},
+    ]
+    kept = discover.filter_by_keywords(items, ("funny", "film"))
+    assert [i["video_id"] for i in kept] == ["a", "c"]
+
+
+def test_filter_by_keywords_ignores_accents():
+    items = [{"video_id": "a", "desc": "La scène la plus drôle 😂"}]
+    assert [i["video_id"] for i in discover.filter_by_keywords(items, ("scene",))] == ["a"]
+    assert [i["video_id"] for i in discover.filter_by_keywords(items, ("drole",))] == ["a"]
+    assert discover.filter_by_keywords(items, ("cinema",)) == []
+
+
+def test_filter_by_keywords_respects_word_boundaries():
+    items = [{"video_id": "a", "desc": "filming my kitchen renovation"}]
+    assert discover.filter_by_keywords(items, ("film",)) == []
+
+
+def test_filter_by_keywords_empty_list_keeps_everything():
+    items = [{"video_id": "a", "desc": "anything"}, {"video_id": "b", "desc": ""}]
+    assert discover.filter_by_keywords(items, ()) == items
+
+
+def test_filter_by_duration_drops_long_and_keeps_unknown():
+    items = [
+        {"video_id": "short", "duration": 30},
+        {"video_id": "edge", "duration": 90},
+        {"video_id": "long", "duration": 352},
+        {"video_id": "unknown", "duration": 0},
+    ]
+    kept = discover.filter_by_duration(items, 90)
+    assert [i["video_id"] for i in kept] == ["short", "edge", "unknown"]
+
+
+def test_filter_by_duration_disabled_when_zero():
+    items = [{"video_id": "long", "duration": 9999}]
+    assert discover.filter_by_duration(items, 0) == items
+
+
 def test_fetch_returns_data_and_hits_endpoint_once():
     seen = []
 

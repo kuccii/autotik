@@ -69,6 +69,19 @@ def test_discover_min_likes_default_and_override():
     assert load_config(base_env(DISCOVER_MIN_LIKES="-5")).discover_min_likes == 0
 
 
+def test_discover_keywords_parse_into_a_tuple():
+    assert load_config(base_env()).discover_keywords == ()
+    cfg = load_config(base_env(DISCOVER_KEYWORDS="funny, film ,,"))
+    assert cfg.discover_keywords == ("funny", "film")
+
+
+def test_discover_max_duration_default_and_override():
+    assert load_config(base_env()).discover_max_duration_s == 90.0
+    assert load_config(base_env(DISCOVER_MAX_DURATION_S="60")).discover_max_duration_s == 60.0
+    assert load_config(base_env(DISCOVER_MAX_DURATION_S="0")).discover_max_duration_s == 0.0
+    assert load_config(base_env(DISCOVER_MAX_DURATION_S="-3")).discover_max_duration_s == 0.0
+
+
 def test_invalid_overlay_account_rejected():
     with pytest.raises(ConfigError):
         load_config(base_env(OVERLAY_ACCOUNT="@bad:handle"))

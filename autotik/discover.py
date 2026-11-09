@@ -1,5 +1,7 @@
 import math
+import re
 import time
+import unicodedata
 
 import httpx
 
@@ -142,6 +144,46 @@ def filter_by_likes(items, min_likes):
     if min_likes <= 0:
         return items
     return [i for i in items if (i.get("digg_count") or 0) >= min_likes]
+
+
+def _fold(text):
+    """Lowercase and strip accents so 'scene' matches 'scène'."""
+    decomposed = unicodedata.normalize("NFKD", (text or "").lower())
+    return "".join(c for c in decomposed if not unicodedata.combining(c))
+
+
+def filter_by_keywords(items, keywords):
+    """Keep only items whose caption mentions the account's niche.
+
+    An empty keyword list means no filter, so the pipeline still works without
+    a niche configured. Matching is accent- and case-insensitive and respects
+    word boundaries, so 'filming' does not match 'film'.
+    """
+    terms = [t for t in (keywords or ()) if str(t).strip()]
+    if not terms:
+        return items
+    patterns = [
+        re.compile(r"\b" + re.escape(_fold(t).strip()) + r"\b", re.IGNORECASE)
+        for t in terms
+    ]
+    kept = []
+    for item in items:
+        haystack = _fold(item.get("desc") or "")
+        if any(p.search(haystack) for p in patterns):
+            kept.append(item)
+    return kept
+
+
+def filter_by_duration(items, max_seconds):
+    """Drop videos longer than the cap. A slot is worth ~90s of viewer attention,
+    and a long source costs minutes of ffmpeg: a 5:52 clip once held the encode
+    for over an hour. Unknown durations (0) are kept."""
+    if max_seconds <= 0:
+        return items
+    return [
+        i for i in items
+        if not (i.get("duration") or 0) or (i["duration"] <= max_seconds)
+    ]
 
 
 def score_item(item, now):
