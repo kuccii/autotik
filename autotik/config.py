@@ -26,6 +26,9 @@ class Config:
     discover_fetch: int
     discover_keep: int
     discover_regions: tuple[str, ...]
+    discover_hashtags: tuple[str, ...]
+    discover_hashtag_pages: int
+    discover_allow_regions: tuple[str, ...]
     discover_max_age_days: float
     discover_min_likes: int
     discover_keywords: tuple[str, ...]
@@ -110,9 +113,29 @@ def load_config(env=None) -> Config:
                 f"DISCOVER_REGIONS entry {code!r} must be a 2-letter ISO country code"
             )
 
+    hashtags = tuple(dict.fromkeys(
+        h.strip().strip("#").lower()
+        for h in env.get("DISCOVER_HASHTAGS", "").split(",")
+        if h.strip().strip("#")
+    ))
+    allow_regions = tuple(dict.fromkeys(
+        r.strip().upper()
+        for r in env.get("DISCOVER_ALLOW_REGIONS", "").split(",")
+        if r.strip()
+    ))
+    for code in allow_regions:
+        if not REGION_CODE_RE.match(code):
+            raise ConfigError(
+                f"DISCOVER_ALLOW_REGIONS entry {code!r} must be a 2-letter ISO "
+                "country code"
+            )
+
     return Config(
         region=region,
         discover_regions=regions or (region,),
+        discover_hashtags=hashtags,
+        discover_hashtag_pages=max(1, _int(env.get("DISCOVER_HASHTAG_PAGES"), 3)),
+        discover_allow_regions=allow_regions or regions or (region,),
         account=env["TIKTOK_ACCOUNT"].strip(),
         openrouter_api_key=env["OPENROUTER_API_KEY"].strip(),
         openrouter_model=env.get("OPENROUTER_MODEL", "openrouter/free").strip(),

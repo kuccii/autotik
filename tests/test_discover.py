@@ -183,6 +183,116 @@ def test_filter_by_duration_disabled_when_zero():
     assert discover.filter_by_duration(items, 0) == items
 
 
+def test_filter_by_regions_keeps_only_target_markets():
+    items = [
+        {"video_id": "fr", "region": "FR"},
+        {"video_id": "gb", "region": "GB"},
+        {"video_id": "us", "region": "US"},
+        {"video_id": "none", "region": None},
+    ]
+    kept = discover.filter_by_regions(items, ("FR", "GB", "BE", "CH"))
+    assert [i["video_id"] for i in kept] == ["fr", "gb"]
+
+
+def test_filter_by_regions_is_case_insensitive_and_disabled_when_empty():
+    items = [{"video_id": "fr", "region": "fr"}]
+    assert discover.filter_by_regions(items, ("FR",)) == items
+    assert discover.filter_by_regions(items, ()) == items
+
+
+def test_resolve_challenge_prefers_exact_name(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+
+    def handler(request):
+        return httpx.Response(200, json={"code": 0, "data": {"challenge_list": [
+            {"id": "1", "cha_name": "funny_"},
+            {"id": "5424", "cha_name": "Funny"},
+            {"id": "2", "cha_name": "funny😂"},
+        ]}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert discover.resolve_challenge(client, "#funny") == "5424"
+
+
+def test_resolve_challenge_falls_back_to_first_result(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+
+    def handler(request):
+        return httpx.Response(200, json={"code": 0, "data": {"challenge_list": [
+            {"id": "9", "cha_name": "comedyclub"},
+        ]}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    assert discover.resolve_challenge(client, "comedy") == "9"
+
+
+def test_fetch_hashtags_paginates_and_dedupes(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+    pages = {"n": 0}
+
+    def handler(request):
+        url = str(request.url)
+        if "challenge/search" in url:
+            return httpx.Response(200, json={"code": 0, "data": {"challenge_list": [
+                {"id": "5424", "cha_name": "funny"},
+            ]}})
+        pages["n"] += 1
+        if pages["n"] == 1:
+            return httpx.Response(200, json={"code": 0, "data": {
+                "videos": [{"video_id": "a"}, {"video_id": "b"}],
+                "cursor": 20, "hasMore": True,
+            }})
+        return httpx.Response(200, json={"code": 0, "data": {
+            "videos": [{"video_id": "b"}, {"video_id": "c"}],
+            "cursor": 40, "hasMore": False,
+        }})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    raw = discover.fetch_hashtags(client, ["funny"], pages=5)
+    assert [v["video_id"] for v in raw] == ["a", "b", "c"]
+    assert pages["n"] == 2
+
+
+def test_fetch_hashtags_stops_when_cursor_does_not_advance(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def handler(request):
+        url = str(request.url)
+        if "challenge/search" in url:
+            return httpx.Response(200, json={"code": 0, "data": {"challenge_list": [
+                {"id": "1", "cha_name": "funny"},
+            ]}})
+        calls["n"] += 1
+        return httpx.Response(200, json={"code": 0, "data": {
+            "videos": [{"video_id": f"v{calls['n']}"}],
+            "cursor": 0, "hasMore": True,
+        }})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    raw = discover.fetch_hashtags(client, ["funny"], pages=5)
+    assert len(raw) == 1
+    assert calls["n"] == 1
+
+
+def test_fetch_hashtags_raises_when_every_tag_fails(monkeypatch):
+    monkeypatch.setattr(discover.time, "sleep", lambda s: None)
+
+    def handler(request):
+        return httpx.Response(200, json={"code": 0, "data": {"challenge_list": []}})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    with pytest.raises(discover.DiscoveryError):
+        discover.fetch_hashtags(client, ["funny"], pages=1)
+
+
+def test_fetch_hashtags_with_no_tags_raises():
+    client = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={})))
+    with pytest.raises(discover.DiscoveryError, match="no discovery hashtags"):
+        discover.fetch_hashtags(client, [])
+
+
 def test_fetch_returns_data_and_hits_endpoint_once():
     seen = []
 

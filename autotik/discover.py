@@ -6,6 +6,8 @@ import unicodedata
 import httpx
 
 API_URL = "https://www.tikwm.com/api/feed/list"
+CHALLENGE_SEARCH_URL = "https://www.tikwm.com/api/challenge/search"
+CHALLENGE_POSTS_URL = "https://www.tikwm.com/api/challenge/posts"
 RETRY_DELAYS = (5, 15, 45)
 BACKOFF_STATUSES = {429, 500, 502, 503, 531}
 REGION_SPACING = 1.1  # tikwm free tier allows 1 request/second
@@ -81,6 +83,122 @@ def _fetch_one(client, region, count):
     )
 
 
+def _get_json(client, url, params, what):
+    """GET a tikwm endpoint, retrying the same way the region feed does."""
+    last = "unknown"
+    for delay in (0,) + RETRY_DELAYS:
+        if delay:
+            time.sleep(delay)
+        try:
+            resp = client.get(url, params=params, timeout=30.0)
+        except httpx.HTTPError as exc:
+            last = f"http error: {exc}"
+            continue
+        if resp.status_code in BACKOFF_STATUSES:
+            last = f"HTTP {resp.status_code}"
+            continue
+        if resp.status_code != 200:
+            last = f"HTTP {resp.status_code}"
+            continue
+        try:
+            body = resp.json()
+        except ValueError:
+            last = "non-JSON body"
+            continue
+        if body.get("code") != 0:
+            last = f"code={body.get('code')} msg={body.get('msg')}"
+            continue
+        return body.get("data")
+    raise DiscoveryError(f"{what} failed after retries: {last}")
+
+
+def resolve_challenge(client, tag):
+    """Map a hashtag to its numeric challenge id.
+
+    tikwm returns near-duplicate names ('funny', 'funny_', 'funny 😂') for one
+    query, so prefer an exact case-insensitive match and fall back to the first
+    result only when there is none.
+    """
+    name = str(tag or "").strip().lstrip("#")
+    if not name:
+        return None
+    try:
+        data = _get_json(
+            client,
+            CHALLENGE_SEARCH_URL,
+            {"keywords": name},
+            f"tikwm challenge search for {name!r}",
+        ) or {}
+    except DiscoveryError:
+        return None
+    wanted = name.lower()
+    entries = data.get("challenge_list") or []
+    for entry in entries:
+        if (entry.get("cha_name") or "").strip().lower() == wanted:
+            return str(entry["id"]) if entry.get("id") else None
+    first = entries[0] if entries else {}
+    return str(first.get("id")) if first.get("id") else None
+
+
+def fetch_hashtags(client, tags, pages=3, spacing=REGION_SPACING):
+    """Collect videos from TikTok hashtag feeds, cursor by cursor.
+
+    Region feeds are not really regional: asking tikwm for FR/GB returned 16
+    countries and almost no French content. Hashtag feeds are the opposite --
+    the tag *is* the niche, and each video carries a genuine source region we
+    can gate on. Pagination is cursor-based and effectively unbounded, so a
+    handful of tags out-yields the same number of regions by an order of
+    magnitude.
+    """
+    if isinstance(tags, str):
+        tags = (tags,)
+    tags = tuple(t for t in tags if str(t).strip())
+    if not tags:
+        raise DiscoveryError("no discovery hashtags configured")
+    merged = []
+    seen = set()
+    errors = []
+    for idx, tag in enumerate(tags):
+        if idx:
+            time.sleep(spacing)
+        challenge_id = resolve_challenge(client, tag)
+        if not challenge_id:
+            errors.append(f"no challenge id for #{tag}")
+            continue
+        cursor = 0
+        for page in range(max(1, pages)):
+            if page:
+                time.sleep(spacing)
+            try:
+                data = _get_json(
+                    client,
+                    CHALLENGE_POSTS_URL,
+                    {"challenge_id": challenge_id, "count": 30, "cursor": cursor},
+                    f"tikwm challenge posts for #{tag}",
+                ) or {}
+            except DiscoveryError as exc:
+                errors.append(str(exc))
+                break
+            videos = data.get("videos") or []
+            if not videos:
+                break
+            for raw in videos:
+                video_id = (raw or {}).get("video_id")
+                if not video_id or video_id in seen:
+                    continue
+                seen.add(video_id)
+                merged.append(raw)
+            next_cursor = data.get("cursor")
+            if not data.get("hasMore") or next_cursor in (None, cursor):
+                break
+            cursor = next_cursor
+    if not merged:
+        raise DiscoveryError(
+            errors[-1] if errors else "hashtag discovery returned nothing"
+        )
+    return merged
+
+
 def canonical_url(author, video_id):
     return f"https://www.tiktok.com/@{author}/video/{video_id}"
 
@@ -144,6 +262,22 @@ def filter_by_likes(items, min_likes):
     if min_likes <= 0:
         return items
     return [i for i in items if (i.get("digg_count") or 0) >= min_likes]
+
+
+def filter_by_regions(items, allowed):
+    """Keep only videos TikTok attributes to the account's target markets.
+
+    This is the gate that makes the pivot real. Hashtag feeds still return a
+    majority of US videos (the global default), which is exactly the mismatch
+    we set out to fix, so FR/UK targeting needs an explicit source-region
+    allow-list. An empty allow-list disables the gate.
+    """
+    if isinstance(allowed, str):
+        allowed = (allowed,)
+    codes = {str(c).strip().upper() for c in (allowed or ()) if str(c).strip()}
+    if not codes:
+        return items
+    return [i for i in items if (i.get("region") or "").upper() in codes]
 
 
 def _fold(text):

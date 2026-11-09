@@ -82,6 +82,30 @@ def test_discover_max_duration_default_and_override():
     assert load_config(base_env(DISCOVER_MAX_DURATION_S="-3")).discover_max_duration_s == 0.0
 
 
+def test_discover_hashtags_parse_and_dedupe():
+    assert load_config(base_env()).discover_hashtags == ()
+    cfg = load_config(base_env(DISCOVER_HASHTAGS="Funny, #drole ,, funny,blague"))
+    assert cfg.discover_hashtags == ("funny", "drole", "blague")
+
+
+def test_discover_hashtag_pages_default_and_floor():
+    assert load_config(base_env()).discover_hashtag_pages == 3
+    assert load_config(base_env(DISCOVER_HASHTAG_PAGES="5")).discover_hashtag_pages == 5
+    assert load_config(base_env(DISCOVER_HASHTAG_PAGES="0")).discover_hashtag_pages == 1
+
+
+def test_discover_allow_regions_defaults_to_regions_then_override():
+    assert load_config(base_env(DISCOVER_REGIONS="FR,GB")).discover_allow_regions == ("FR", "GB")
+    assert load_config(base_env(
+        DISCOVER_REGIONS="FR,GB", DISCOVER_ALLOW_REGIONS="fr, be ,ch"
+    )).discover_allow_regions == ("FR", "BE", "CH")
+
+
+def test_discover_allow_regions_rejects_bad_codes():
+    with pytest.raises(ConfigError):
+        load_config(base_env(DISCOVER_ALLOW_REGIONS="FRANCE"))
+
+
 def test_invalid_overlay_account_rejected():
     with pytest.raises(ConfigError):
         load_config(base_env(OVERLAY_ACCOUNT="@bad:handle"))

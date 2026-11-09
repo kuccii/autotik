@@ -26,19 +26,48 @@ def run_discover(cfg, conn, limit=None):
     now = time.time()
     cur = conn.cursor()
     with httpx.Client(follow_redirects=True) as client:
-        feed = discover.fetch_feed(client, cfg.discover_regions, fetch)
-        items = discover.parse_items(feed)
+        items = []
+        if cfg.discover_hashtags:
+            try:
+                raw = discover.fetch_hashtags(
+                    client, cfg.discover_hashtags, cfg.discover_hashtag_pages
+                )
+                items = discover.parse_items(raw)
+                print(
+                    f"hashtag discovery: {len(items)} usable from "
+                    f"{len(cfg.discover_hashtags)} tags "
+                    f"({cfg.discover_hashtag_pages} pages each)",
+                    flush=True,
+                )
+            except discover.DiscoveryError as exc:
+                print(f"hashtag discovery failed: {exc}; falling back to regions",
+                      flush=True)
+                items = []
+        if not items:
+            feed = discover.fetch_feed(client, cfg.discover_regions, fetch)
+            items = discover.parse_items(feed)
         items = discover.filter_by_age(items, now, cfg.discover_max_age_days)
-        items = discover.filter_by_duration(items, cfg.discover_max_duration_s)
-        items = discover.filter_by_likes(items, cfg.discover_min_likes)
-        before_niche = len(items)
-        items = discover.filter_by_keywords(items, cfg.discover_keywords)
-        if cfg.discover_keywords and items:
+        before_region = len(items)
+        items = discover.filter_by_regions(items, cfg.discover_allow_regions)
+        if cfg.discover_allow_regions and before_region != len(items):
             print(
-                f"niche filter: {len(items)}/{before_niche} keep "
-                f"({'/'.join(cfg.discover_keywords)})",
+                f"region gate: {len(items)}/{before_region} keep "
+                f"({'/'.join(cfg.discover_allow_regions)})",
                 flush=True,
             )
+        items = discover.filter_by_duration(items, cfg.discover_max_duration_s)
+        items = discover.filter_by_likes(items, cfg.discover_min_likes)
+        # Hashtag sourcing already defines the niche, so the caption keyword
+        # gate only applies to the generic region feed.
+        before_niche = len(items)
+        if not cfg.discover_hashtags:
+            items = discover.filter_by_keywords(items, cfg.discover_keywords)
+            if cfg.discover_keywords and items:
+                print(
+                    f"niche filter: {len(items)}/{before_niche} keep "
+                    f"({'/'.join(cfg.discover_keywords)})",
+                    flush=True,
+                )
         items = [i for i in items if db.get(cur, i["video_id"]) is None]
         items = discover.rank(items, keep, now)
         if not items:
